@@ -1,4 +1,8 @@
 __pycache__/
-venv/
+.venv/
 pem/
 .env
+.DS_Store
+*.db
+node_modules/
+dist/

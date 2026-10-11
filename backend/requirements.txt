@@ -16,3 +16,8 @@ requests
 pyjwt
 cryptography
 python-dotenv
+openai
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.3
+itsdangerous==2.2.0
+alembic==1.14.0
