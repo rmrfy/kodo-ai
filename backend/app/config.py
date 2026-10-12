@@ -1,4 +1,4 @@
-"""Environment-backed configuration for Kodo."""
+"""Environment-backed configuration for kodai."""
 import os
 from pathlib import Path
 from dotenv import load_dotenv

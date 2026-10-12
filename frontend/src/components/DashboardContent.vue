@@ -93,7 +93,7 @@ const emit = defineEmits(['connect', 'tab', 'rebuild-book', 'refresh-pulls', 'as
     <RepoBookPanel v-else-if="tab === 'book'" id="panel-book" role="tabpanel" aria-labelledby="tab-book" :sections="book.sections" :documents="book.documents" :build-summary="book.build_summary" :progress="bookProgress" :loading="bookLoading" @rebuild="$emit('rebuild-book')" />
     <UsagePanel v-else id="panel-usage" role="tabpanel" aria-labelledby="tab-usage" :usage="usage" />
 
-    <div class="privacy-note"><span class="privacy-icon">♢</span><span>Private source code stays within Kodo’s processing pipeline and is used only to generate repository insights.</span><span class="review-toggle">Automatic reviews <strong>{{ repository.enabled ? 'on' : 'paused' }}</strong><i :class="{ off: !repository.enabled }"></i></span></div>
+    <div class="privacy-note"><span class="privacy-icon">♢</span><span>Private source code stays within kodai’s processing pipeline and is used only to generate repository insights.</span><span class="review-toggle">Automatic reviews <strong>{{ repository.enabled ? 'on' : 'paused' }}</strong><i :class="{ off: !repository.enabled }"></i></span></div>
   </div>
 </template>
 

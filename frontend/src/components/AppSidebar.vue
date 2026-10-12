@@ -15,8 +15,8 @@ defineEmits(['select', 'connect', 'settings'])
 
 <template>
   <aside class="sidebar">
-    <a class="brand" href="#" aria-label="Kodo AI home">
-      <span class="brand-mark">K</span><span class="brand-name">kodo<span>ai</span></span>
+    <a class="brand" href="#" aria-label="kodai home">
+      <span class="brand-mark">k</span><span class="brand-name">kodai</span>
     </a>
 
     <div class="sidebar-section-heading">
@@ -43,7 +43,7 @@ defineEmits(['select', 'connect', 'settings'])
 
     <div class="sidebar-bottom">
       <div class="avatar">{{ user.slice(0, 1).toUpperCase() || 'K' }}</div>
-      <div class="user-info"><strong>{{ user || 'Kodo workspace' }}</strong><span>{{ signedIn ? 'GitHub account' : 'Developer preview' }}</span></div>
+      <div class="user-info"><strong>{{ user || 'kodai workspace' }}</strong><span>{{ signedIn ? 'GitHub account' : 'Developer preview' }}</span></div>
       <button v-if="signedIn" class="settings-shortcut" :class="{ active: page === 'settings' }" aria-label="Open settings" title="Settings" @click="$emit('settings')">
         <Settings :size="22" :stroke-width="1.8" aria-hidden="true" />
       </button>

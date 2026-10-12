@@ -46,14 +46,14 @@ watch(() => [props.messages.length, props.loading], async () => {
     <div v-if="historyLoading" class="chat-no-book" role="status"><span class="chat-empty-mark">↻</span><h3>Loading repository context</h3><p>Fetching the Handbook status and recent conversation.</p></div>
     <div v-else-if="!bookReady || bookMock" class="chat-no-book">
       <span class="chat-empty-mark">▤</span><h3>{{ bookMock ? 'Regenerate with live AI' : 'Build the Handbook to start' }}</h3>
-      <p>{{ bookMock ? 'This book was generated in mock mode, so it does not contain repository-grounded notes. Regenerate it now that live AI is enabled, then ask again.' : 'Kodo uses the repository handbook and its file and module index to answer questions with sources.' }}</p>
+      <p>{{ bookMock ? 'This book was generated in mock mode, so it does not contain repository-grounded notes. Regenerate it now that live AI is enabled, then ask again.' : 'kodai uses the repository handbook and its file and module index to answer questions with sources.' }}</p>
       <button class="button button-primary" @click="emit('open-book')">{{ bookMock ? 'Open Handbook' : 'Build Handbook' }} <span>→</span></button>
     </div>
 
     <div v-else ref="thread" class="chat-thread" aria-live="polite">
       <div v-if="!messages.length" class="chat-welcome">
         <span class="chat-empty-mark">✳</span><h3>Your repository guide</h3>
-        <p>Ask how a feature works, where a flow lives, or how modules fit together. Kodo will answer from the Handbook and call out when its notes don’t cover something.</p>
+        <p>Ask how a feature works, where a flow lives, or how modules fit together. kodai will answer from the Handbook and call out when its notes don’t cover something.</p>
         <div class="chat-suggestions">
           <button @click="submitQuestion('How is this repository structured?')">How is this repository structured?</button>
           <button @click="submitQuestion('Where does the main data flow start and end?')">Explain the main data flow</button>
@@ -64,7 +64,7 @@ watch(() => [props.messages.length, props.loading], async () => {
       <article v-for="message in messages" :key="message.id" class="chat-message" :class="message.role">
         <div class="chat-message-avatar">{{ message.role === 'assistant' ? 'K' : 'YOU' }}</div>
         <div class="chat-message-main">
-          <div class="chat-message-meta"><strong>{{ message.role === 'assistant' ? 'Kodo' : 'You' }}</strong><time :datetime="message.created_at">{{ new Date(message.created_at).toLocaleString() }}</time></div>
+          <div class="chat-message-meta"><strong>{{ message.role === 'assistant' ? 'kodai' : 'You' }}</strong><time :datetime="message.created_at">{{ new Date(message.created_at).toLocaleString() }}</time></div>
           <p class="chat-message-content">{{ message.content }}</p>
           <div v-if="message.sources?.length" class="chat-sources">
             <span class="chat-sources-label">FROM YOUR HANDBOOK</span>
@@ -76,7 +76,7 @@ watch(() => [props.messages.length, props.loading], async () => {
       </article>
 
       <article v-if="loading" class="chat-message assistant">
-        <div class="chat-message-avatar">K</div><div class="chat-message-main"><div class="chat-message-meta"><strong>Kodo</strong><span>Searching the Handbook</span></div><div class="chat-typing"><i></i><i></i><i></i></div></div>
+        <div class="chat-message-avatar">K</div><div class="chat-message-main"><div class="chat-message-meta"><strong>kodai</strong><span>Searching the Handbook</span></div><div class="chat-typing"><i></i><i></i><i></i></div></div>
       </article>
     </div>
 
@@ -85,6 +85,6 @@ watch(() => [props.messages.length, props.loading], async () => {
       <textarea id="repo-question" v-model="question" rows="2" maxlength="4000" :disabled="loading" placeholder="Ask a question about this repository…" @keydown.enter.exact.prevent="submitQuestion()"></textarea>
       <div class="composer-footer"><span>Grounded in Handbook notes · Enter to send</span><button class="send-question" type="submit" :disabled="loading || !question.trim()" aria-label="Send question">{{ loading ? '…' : '↑' }}</button></div>
     </form>
-    <div class="chat-disclaimer">Kodo answers from generated Handbook notes. If the notes don’t cover something, it will say so.</div>
+    <div class="chat-disclaimer">kodai answers from generated Handbook notes. If the notes don’t cover something, it will say so.</div>
   </section>
 </template>

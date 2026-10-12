@@ -6,7 +6,7 @@ from typing import Callable, Protocol
 
 @dataclass(frozen=True)
 class CodingAgentSandbox:
-    """Minimum execution restrictions required by Kodo's task runner."""
+    """Minimum execution restrictions required by kodai's task runner."""
 
     workspace_write: bool = True
     network_access: bool = False

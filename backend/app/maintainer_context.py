@@ -1,4 +1,4 @@
-"""Load and format maintainer-authored Kodo context files."""
+"""Load and format maintainer-authored kodai context files."""
 from sqlalchemy import select
 
 from .models import ContextFile

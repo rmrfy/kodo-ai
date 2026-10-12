@@ -1,4 +1,4 @@
-"""Kodo AI GitHub App API."""
+"""kodai GitHub App API."""
 import asyncio
 import hashlib
 import hmac
@@ -28,7 +28,7 @@ from .repo_chat import retrieve_book_context
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kodo")
-app = FastAPI(title="Kodo AI", version="0.1.0")
+app = FastAPI(title="kodai", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=[config.FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Content-Type"])
 SESSION_SECRET = os.getenv("KODO_SESSION_SECRET", "local-only-change-this-secret")
 if os.getenv("ENVIRONMENT", "development").lower() == "production" and SESSION_SECRET == "local-only-change-this-secret":
@@ -471,7 +471,7 @@ def _verify_session_pull_request(repo, destination):
             destination.status = "unavailable"
             destination.error = "This pull request is no longer available. The next task can start a new PR."
             return False
-        raise HTTPException(503, "Kodo could not verify the pull request. Try again shortly.")
+        raise HTTPException(503, "kodai could not verify the pull request. Try again shortly.")
     if pull.get("state") != "open":
         destination.status = "closed"
         destination.error = "This pull request is closed or merged. The next task can start a new PR."
@@ -480,7 +480,7 @@ def _verify_session_pull_request(repo, destination):
     head_repo = (head.get("repo") or {}).get("full_name", "")
     if head_repo.casefold() != repo.full_name.casefold():
         destination.status = "ineligible"
-        destination.error = "This PR uses a fork branch Kodo cannot update. The next task can start a new PR."
+        destination.error = "This PR uses a fork branch kodai cannot update. The next task can start a new PR."
         return False
     if destination.branch and head.get("ref") != destination.branch:
         destination.status = "ineligible"
@@ -501,7 +501,7 @@ def _session_eligibility(repo, sessions, destinations):
             token = installation_token(repo.installation_id)
             open_prs = github_request("GET", f"/repos/{repo.full_name}/pulls", token, params={"state": "open", "per_page": 100}) or []
         except Exception:
-            lookup_error = "Kodo could not verify this pull request. Try refreshing in a moment."
+            lookup_error = "kodai could not verify this pull request. Try refreshing in a moment."
     open_by_number = {pull.get("number"): pull for pull in (open_prs or [])}
     for destination in destinations:
         reason = ""
@@ -519,7 +519,7 @@ def _session_eligibility(repo, sessions, destinations):
                 head_repo = (head.get("repo") or {}).get("full_name", "")
                 if head_repo.casefold() != repo.full_name.casefold():
                     target_valid = False
-                    reason = "This PR uses a fork branch Kodo cannot update. Start a new PR in this session."
+                    reason = "This PR uses a fork branch kodai cannot update. Start a new PR in this session."
                     destination.status, destination.error = "ineligible", reason
                 elif destination.branch and head.get("ref") != destination.branch:
                     target_valid = False
@@ -846,7 +846,7 @@ async def ask_repo_chat(repo_id: int, request: Request):
         result = await asyncio.to_thread(ai.answer_repo_question, repo.full_name, question, history, selected_sources, maintainer_context)
     except Exception as error:
         log.exception("Repository chat failed (%s)", type(error).__name__)
-        raise HTTPException(502, "Kodo could not answer this question. Check the backend logs and try again.")
+        raise HTTPException(502, "kodai could not answer this question. Check the backend logs and try again.")
 
     db = SessionLocal()
     try:

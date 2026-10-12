@@ -402,10 +402,10 @@ onUnmounted(() => {
         </div>
 
         <section v-else-if="!signedIn" class="welcome-card">
-          <div class="welcome-mark">K</div>
+          <div class="welcome-mark">k</div>
           <div class="welcome-copy">
             <span class="eyebrow">YOUR CODE, UNDERSTOOD</span>
-            <h1>Welcome to Kodo AI</h1>
+            <h1>Welcome to kodai</h1>
             <p>Connect your GitHub account to see pull request reviews and repository knowledge in one place.</p>
             <a class="button button-primary" :href="`${API_BASE}/api/auth/github`">Continue with GitHub <span>↗</span></a>
           </div>
@@ -440,11 +440,11 @@ onUnmounted(() => {
         />
 
         <section v-else-if="!repos.length" class="welcome-card">
-          <div class="welcome-mark">K</div>
+          <div class="welcome-mark">k</div>
           <div class="welcome-copy">
             <span class="eyebrow">GET STARTED</span>
             <h1>Connect a repository</h1>
-            <p>Install the Kodo GitHub App on a repository to start receiving AI summaries, actionable reviews, and a living Handbook.</p>
+            <p>Install the kodai GitHub App on a repository to start receiving AI summaries, actionable reviews, and a living Handbook.</p>
             <button class="button button-primary" @click="installLink">Connect repository <span>↗</span></button>
           </div>
         </section>
@@ -480,7 +480,7 @@ onUnmounted(() => {
           @refresh-pulls="() => loadPulls()"
         />
 
-        <footer v-if="page !== 'session'" class="app-footer"><span>Made for thoughtful code review</span><span>KODO AI <i>·</i> PRIVATE BY DESIGN</span></footer>
+        <footer v-if="page !== 'session'" class="app-footer"><span>Made for thoughtful code review</span><span>kodai <i>·</i> PRIVATE BY DESIGN</span></footer>
       </div>
     </main>
   </div>
