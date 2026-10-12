@@ -2,6 +2,8 @@
 
 Kodo is a GitHub App with a FastAPI backend and Vue 3 dashboard. It stores installations, pull request analyses, Handbook summaries, per-user Handbook chat history, and model usage in PostgreSQL. `DATABASE_URL` is required; SQLite and implicit database fallbacks are not supported. GitHub webhook deliveries are HMAC verified and deduplicated. Opened, reopened, synchronized, and ready-for-review pull requests are summarized and reviewed; actionable findings are posted inline only when their line is in the diff. Users can ask repository questions against retrieved Handbook notes, with source labels in each answer.
 
+Settings provides Markdown context files for each GitHub App installation and each repository. Workspace context applies across that installation's repositories; repository context supplements it and takes precedence when they conflict. Kodo uses the context when generating Handbook chapters, answering repository questions, and preparing coding tasks. Updating context marks existing Handbook chapters stale; regenerate a Handbook to refresh them.
+
 ## Local development
 
 1. Install Python dependencies: `python -m venv backend/.venv && backend/.venv/bin/pip install -r backend/requirements.txt`.

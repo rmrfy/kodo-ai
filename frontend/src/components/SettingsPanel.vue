@@ -1,12 +1,36 @@
 <script setup>
-defineProps({
+import { computed, ref, watch } from 'vue'
+const props = defineProps({
   user: { type: String, default: '' },
   installations: { type: Array, default: () => [] },
   repos: { type: Array, default: () => [] },
+  contexts: { type: Object, default: () => ({ workspace: {}, repository: {} }) },
+  contextLoading: { type: Boolean, default: false },
+  savingContext: { type: String, default: '' },
 })
-defineEmits(['connect', 'mode', 'toggle-repo', 'logout'])
+const emit = defineEmits(['connect', 'mode', 'toggle-repo', 'logout', 'save-workspace-context', 'save-repository-context'])
 
 const modeLabels = { quick: 'Quick', standard: 'Standard', deep: 'Deep', security: 'Security focused' }
+const selectedInstallation = ref('')
+const selectedRepository = ref('')
+const workspaceDraft = ref('')
+const repositoryDraft = ref('')
+const workspaceSaveKey = computed(() => `workspace-${selectedInstallation.value}`)
+const repositorySaveKey = computed(() => `repository-${selectedRepository.value}`)
+
+watch(() => [props.installations, props.repos], () => {
+  if (!props.installations.some(row => String(row.id) === String(selectedInstallation.value))) selectedInstallation.value = props.installations[0]?.id ? String(props.installations[0].id) : ''
+  if (!props.repos.some(row => String(row.id) === String(selectedRepository.value))) selectedRepository.value = props.repos[0]?.id ? String(props.repos[0].id) : ''
+}, { immediate: true })
+watch([selectedInstallation, () => props.contexts.workspace], () => { workspaceDraft.value = props.contexts.workspace?.[selectedInstallation.value] || '' }, { immediate: true })
+watch([selectedRepository, () => props.contexts.repository], () => { repositoryDraft.value = props.contexts.repository?.[selectedRepository.value] || '' }, { immediate: true })
+
+function saveWorkspaceContext() {
+  if (selectedInstallation.value) emit('save-workspace-context', selectedInstallation.value, workspaceDraft.value)
+}
+function saveRepositoryContext() {
+  if (selectedRepository.value) emit('save-repository-context', selectedRepository.value, repositoryDraft.value)
+}
 </script>
 
 <template>
@@ -37,6 +61,29 @@ const modeLabels = { quick: 'Quick', standard: 'Standard', deep: 'Deep', securit
         </div>
       </div>
       <div v-else class="settings-empty">No GitHub App installations are connected yet. Connect a repository to get started.</div>
+    </section>
+
+    <section class="settings-section context-files-section">
+      <div class="settings-section-heading"><div><h2>Maintainer context</h2><p>Keep product and team knowledge in Markdown. Kodo uses it for Handbooks, repository chat, and coding tasks.</p></div><span class="context-format-tag">Markdown</span></div>
+      <div class="context-editors">
+        <article class="context-editor-card">
+          <div class="context-editor-heading"><div><h3>Workspace context</h3><p>Shared by repositories in a GitHub App installation.</p></div>
+            <select v-model="selectedInstallation" aria-label="Select GitHub App installation" :disabled="!installations.length"><option v-for="item in installations" :key="item.id" :value="String(item.id)">{{ item.account }} · {{ item.account_type }}</option></select>
+          </div>
+          <label class="context-markdown-label" for="workspace-context-markdown">Workspace Markdown</label>
+          <textarea id="workspace-context-markdown" v-model="workspaceDraft" maxlength="20000" :disabled="!selectedInstallation || contextLoading" placeholder="# Team context&#10;&#10;Product language, shared principles, security expectations, and conventions that apply across repositories." rows="10"></textarea>
+          <div class="context-editor-footer"><span>{{ workspaceDraft.length.toLocaleString() }} / 20,000 characters</span><button class="button button-primary" :disabled="!selectedInstallation || contextLoading || savingContext === workspaceSaveKey" @click="saveWorkspaceContext">{{ savingContext === workspaceSaveKey ? 'Saving…' : 'Save workspace context' }}</button></div>
+        </article>
+        <article class="context-editor-card">
+          <div class="context-editor-heading"><div><h3>Repository context</h3><p>Repository-specific purpose, users, workflows, and decisions. This takes precedence over workspace context.</p></div>
+            <select v-model="selectedRepository" aria-label="Select repository" :disabled="!repos.length"><option v-for="item in repos" :key="item.id" :value="String(item.id)">{{ item.full_name }}</option></select>
+          </div>
+          <label class="context-markdown-label" for="repository-context-markdown">Repository Markdown</label>
+          <textarea id="repository-context-markdown" v-model="repositoryDraft" maxlength="20000" :disabled="!selectedRepository || contextLoading" placeholder="# Product context&#10;&#10;What this repository builds, who uses it, key business rules, local setup, operations, and known constraints." rows="10"></textarea>
+          <div class="context-editor-footer"><span>{{ repositoryDraft.length.toLocaleString() }} / 20,000 characters</span><button class="button button-primary" :disabled="!selectedRepository || contextLoading || savingContext === repositorySaveKey" @click="saveRepositoryContext">{{ savingContext === repositorySaveKey ? 'Saving…' : 'Save repository context' }}</button></div>
+        </article>
+      </div>
+      <p class="context-invalidation-note">Saving context marks generated Handbook chapters as out of date. Regenerate the Handbook for updated chapters.</p>
     </section>
 
     <section class="settings-section">
@@ -76,6 +123,19 @@ const modeLabels = { quick: 'Quick', standard: 'Standard', deep: 'Deep', securit
 .connection-state.suspended { color: #9a7840; }
 .connection-state.suspended i { background: #c49b51; }
 .settings-empty { padding: 18px 20px; color: #7a867e; font-size: 12px; line-height: 1.6; }
+.context-format-tag { padding: 5px 8px; border: 1px solid #e4e9e4; border-radius: 6px; color: #77837b; font-family: var(--mono); font-size: 10px; }
+.context-editors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 17px 20px; }
+.context-editor-card { min-width: 0; padding: 15px; border: 1px solid #e8ece8; border-radius: 9px; background: #fcfdfb; }
+.context-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-height: 66px; }
+.context-editor-heading h3 { color: #37453d; font-size: 12px; font-weight: 620; }
+.context-editor-heading p { max-width: 330px; margin-top: 5px; color: #859087; font-size: 10px; line-height: 1.5; }
+.context-editor-heading select { max-width: 200px; min-width: 120px; padding: 7px 24px 7px 8px; border: 1px solid #dfe5df; border-radius: 7px; background: #fff; color: #405047; font-size: 10px; }
+.context-markdown-label { display: block; margin: 11px 0 6px; color: #6f7c73; font-size: 10px; font-weight: 600; }
+.context-editor-card textarea { display: block; width: 100%; min-height: 190px; padding: 10px 11px; border: 1px solid #dfe5df; border-radius: 7px; background: #fff; color: #34413a; font-family: var(--mono); font-size: 10px; line-height: 1.65; resize: vertical; }
+.context-editor-card textarea:focus { border-color: #9db5a0; outline: 0; box-shadow: 0 0 0 3px #82a58718; }
+.context-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; color: #929c95; font-size: 9px; }
+.context-editor-footer .button { min-height: 32px; padding: 0 10px; font-size: 10px; }
+.context-invalidation-note { padding: 0 20px 15px; color: #8a948e; font-size: 10px; line-height: 1.5; }
 .settings-count { flex: none; color: #8a948e; font-size: 11px; }
 .repo-settings-identity { display: flex; align-items: center; gap: 10px; min-width: 180px; flex: 1; }
 .repo-settings-glyph { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border: 1px solid #e4e9e4; border-radius: 8px; background: #f6f8f5; color: #6b7b70; }
@@ -86,6 +146,10 @@ const modeLabels = { quick: 'Quick', standard: 'Standard', deep: 'Deep', securit
   .settings-heading { margin-bottom: 21px; }
   .settings-section-heading { align-items: flex-start; flex-direction: column; }
   .settings-section-heading > .button { align-self: flex-start; }
+  .context-editors { grid-template-columns: 1fr; padding-right: 13px; padding-left: 13px; }
+  .context-editor-heading { flex-direction: column; }
+  .context-editor-heading select { max-width: 100%; width: 100%; }
+  .context-invalidation-note { padding-right: 13px; padding-left: 13px; }
   .repo-settings-row { align-items: flex-start; flex-wrap: wrap; padding: 14px; }
   .repo-settings-identity { flex-basis: calc(100% - 5px); }
   .repo-mode-select { flex: 1; }

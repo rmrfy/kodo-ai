@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -19,6 +19,16 @@ class Repository(Base):
     private: Mapped[bool] = mapped_column(Boolean, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     review_mode: Mapped[str] = mapped_column(String(32), default="standard")
+
+class ContextFile(Base):
+    """Maintainer-authored Markdown guidance for an installation or repository."""
+    __tablename__ = "context_files"
+    __table_args__ = (UniqueConstraint("scope", "scope_id", name="uq_context_file_scope"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(24), index=True)  # installation or repository
+    scope_id: Mapped[int] = mapped_column(Integer, index=True)
+    markdown: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class PullRequest(Base):
     __tablename__ = "pull_requests"
@@ -96,18 +106,49 @@ class RepoChatMessage(Base):
 
 class AgentTask(Base):
     __tablename__ = "agent_tasks"
+    __table_args__ = (UniqueConstraint("repository_id", "source_pull_request_number", "source_finding_key", name="uq_agent_task_source_finding"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     repository_id: Mapped[int] = mapped_column(Integer, index=True)
     github_user_id: Mapped[int] = mapped_column(Integer, index=True)
     github_login: Mapped[str] = mapped_column(String(255), default="")
     title: Mapped[str] = mapped_column(String(200))
     instructions: Mapped[str] = mapped_column(Text)
+    source_pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_finding_key: Mapped[str] = mapped_column(String(64), default="")
+    work_session_id: Mapped[int] = mapped_column(ForeignKey("work_sessions.id", ondelete="CASCADE"), index=True)
+    work_session_pull_request_id: Mapped[int] = mapped_column(ForeignKey("work_session_pull_requests.id", ondelete="CASCADE"), index=True)
     state: Mapped[str] = mapped_column(String(24), default="queued", index=True)
-    branch: Mapped[str] = mapped_column(String(255), default="")
     commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class WorkSession(Base):
+    __tablename__ = "work_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repository_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    status: Mapped[str] = mapped_column(String(24), default="active", index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class WorkSessionPullRequest(Base):
+    __tablename__ = "work_session_pull_requests"
+    __table_args__ = (
+        UniqueConstraint("work_session_id", "sequence", name="uq_session_pr_sequence"),
+        UniqueConstraint("repository_id", "pull_request_number", name="uq_session_pr_repo_number"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    work_session_id: Mapped[int] = mapped_column(ForeignKey("work_sessions.id", ondelete="CASCADE"), index=True)
+    repository_id: Mapped[int] = mapped_column(Integer, index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    branch: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(24), default="planned", index=True)
     pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pull_request_url: Mapped[str] = mapped_column(Text, default="")
-    summary: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -129,4 +170,7 @@ class UserSession(Base):
     github_user_id: Mapped[int] = mapped_column(Integer, index=True)
     login: Mapped[str] = mapped_column(String(255))
     access_token: Mapped[str] = mapped_column(String(4096))
+    refresh_token: Mapped[str] = mapped_column(String(4096), default="")
+    github_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)

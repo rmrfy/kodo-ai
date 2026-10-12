@@ -48,14 +48,14 @@ def analyze(task: str, instructions: str, context: str, mode: str = "standard") 
     out_rate = float(__import__('os').getenv("OPENAI_OUTPUT_USD_PER_MILLION", "0.50"))
     return AIResult(**data, input_tokens=input_tokens, output_tokens=output_tokens, model=config.OPENAI_MODEL, cost=(input_tokens * in_rate + output_tokens * out_rate) / 1_000_000)
 
-def answer_repo_question(repository: str, question: str, history: list[dict], sources: list[dict]) -> AIResult:
+def answer_repo_question(repository: str, question: str, history: list[dict], sources: list[dict], maintainer_context: str = "") -> AIResult:
     if config.AI_DISABLED or not config.OPENAI_API_KEY:
         return AIResult(answer="Repository chat is in mock mode. Enable AI and configure an OpenAI API key to ask questions about this Handbook.", input_tokens=0, output_tokens=0, model="mock", cost=0)
     from openai import OpenAI
     from .repo_chat import conversation_prompt
     response = OpenAI(api_key=config.OPENAI_API_KEY).responses.create(
         model=config.OPENAI_MODEL,
-        input=conversation_prompt(repository, question, history, sources),
+        input=conversation_prompt(repository, question, history, sources, maintainer_context),
         max_output_tokens=1200,
     )
     usage = response.usage

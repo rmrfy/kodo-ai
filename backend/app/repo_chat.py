@@ -59,12 +59,17 @@ def retrieve_book_context(question: str, documents: list) -> list:
             break
     return selected
 
-def conversation_prompt(repository: str, question: str, history: list[dict], sources: list[dict]) -> str:
+def conversation_prompt(repository: str, question: str, history: list[dict], sources: list[dict], maintainer_context: str = "") -> str:
     source_context = "\n\n".join(source["text"] for source in sources)
     prior_turns = "\n".join(f"{turn['role'].upper()}: {turn['content'][:2000]}" for turn in history[-10:])
     return f"""Repository: {repository}
 
-Answer the user's question using only the Handbook excerpts below. These excerpts are generated notes about the repository, not a complete checkout of its source code. If they do not support an answer, say what is missing and suggest which area or file to inspect. Never invent implementation details. Mark stale notes as potentially out of date. For factual statements, cite the exact source title/path in square brackets, using the source label supplied below.
+Maintainer-provided workspace and repository context:
+{maintainer_context or '(No additional maintainer context provided.)'}
+
+When workspace and repository context conflict, follow repository context. Treat this context as product and operational background; the Handbook remains the source for claims about code behavior.
+
+Use maintainer context for product and operational background, and use the Handbook excerpts below for claims about repository implementation. These excerpts are generated notes, not a complete checkout of the source code. If they do not support an implementation answer, say what is missing and suggest which area or file to inspect. Never invent implementation details. Mark stale notes as potentially out of date. For implementation claims, cite the exact source title/path in square brackets, using the source label supplied below.
 
 Relevant Handbook excerpts:
 {source_context}

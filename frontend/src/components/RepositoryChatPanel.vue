@@ -6,6 +6,7 @@ const props = defineProps({
   messages: { type: Array, default: () => [] },
   bookReady: { type: Boolean, default: false },
   bookMock: { type: Boolean, default: false },
+  historyLoading: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
 })
 const emit = defineEmits(['ask', 'clear', 'open-book'])
@@ -42,7 +43,8 @@ watch(() => [props.messages.length, props.loading], async () => {
       <button class="text-action danger-text" @click="confirmingClear = false; emit('clear')">Clear conversation</button>
     </div>
 
-    <div v-if="!bookReady || bookMock" class="chat-no-book">
+    <div v-if="historyLoading" class="chat-no-book" role="status"><span class="chat-empty-mark">↻</span><h3>Loading repository context</h3><p>Fetching the Handbook status and recent conversation.</p></div>
+    <div v-else-if="!bookReady || bookMock" class="chat-no-book">
       <span class="chat-empty-mark">▤</span><h3>{{ bookMock ? 'Regenerate with live AI' : 'Build the Handbook to start' }}</h3>
       <p>{{ bookMock ? 'This book was generated in mock mode, so it does not contain repository-grounded notes. Regenerate it now that live AI is enabled, then ask again.' : 'Kodo uses the repository handbook and its file and module index to answer questions with sources.' }}</p>
       <button class="button button-primary" @click="emit('open-book')">{{ bookMock ? 'Open Handbook' : 'Build Handbook' }} <span>→</span></button>

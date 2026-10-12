@@ -9,7 +9,7 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-    Base.metadata.create_all(bind=op.get_bind(), tables=[table for table in Base.metadata.sorted_tables if table.name not in {"repo_chat_messages", "repo_book_sections", "agent_tasks"}])
+    Base.metadata.create_all(bind=op.get_bind(), tables=[table for table in Base.metadata.sorted_tables if table.name not in {"repo_chat_messages", "repo_book_sections", "agent_tasks", "context_files"}])
 
 def downgrade():
     Base.metadata.drop_all(bind=op.get_bind())

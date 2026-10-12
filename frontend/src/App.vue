@@ -4,6 +4,7 @@ import AppSidebar from './components/AppSidebar.vue'
 import TopBar from './components/TopBar.vue'
 import DashboardContent from './components/DashboardContent.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import SessionWorkspace from './components/SessionWorkspace.vue'
 
 const API_BASE = import.meta.env.VITE_API_URL || ''
 const api = async (path, options = {}) => {
@@ -29,25 +30,36 @@ const error = ref('')
 const user = ref('')
 const installations = ref([])
 const repos = ref([])
+const contextFiles = ref({ workspace: {}, repository: {} })
+const contextLoading = ref(false)
+const contextLoaded = ref(false)
+const savingContext = ref('')
 const selected = ref(null)
 const pulls = ref([])
+const pullsLoading = ref(false)
 const book = ref({ sections: [], documents: [], build_summary: null })
+const bookDataLoading = ref(false)
 const bookProgress = ref(null)
 const chatMessages = ref([])
 const chatBookReady = ref(false)
 const chatBookMock = ref(false)
+const chatHistoryLoading = ref(false)
 const chatLoading = ref(false)
 const usage = ref([])
-const agentTasks = ref([])
+const workSessions = ref([])
+const sessionsLoading = ref(false)
 const taskSubmitting = ref(false)
+const sessionWorkspaceId = ref(null)
+const sessionInitialDraft = ref(null)
 const tab = ref('pulls')
 const page = ref('dashboard')
 const bookLoading = ref(false)
 let pullPollTimer = null
 let bookPollTimer = null
-let taskPollTimer = null
+let sessionPollTimer = null
 
 const current = computed(() => repos.value.find(repo => repo.id === selected.value) || null)
+const workspaceSession = computed(() => workSessions.value.find(session => session.id === sessionWorkspaceId.value) || null)
 const totalCost = computed(() => usage.value.reduce((sum, row) => sum + row.estimated_cost_usd, 0))
 
 async function init() {
@@ -60,6 +72,7 @@ async function init() {
     ;[installations.value, repos.value, usage.value] = await Promise.all([
       api('/installations'), api('/repos'), api('/usage'),
     ])
+    await loadContextFiles()
     if (!repos.value.some(repo => repo.id === selected.value)) selected.value = repos.value[0]?.id || null
   } catch (err) {
     if (signedIn.value) error.value = err.message
@@ -68,33 +81,68 @@ async function init() {
   }
 }
 
+async function loadContextFiles() {
+  contextLoading.value = true
+  try { contextFiles.value = await api('/context-files'); contextLoaded.value = true }
+  catch (err) { error.value = err.message }
+  finally { contextLoading.value = false }
+}
+
+async function saveContextFile(scope, scopeId, markdown) {
+  const key = `${scope}-${scopeId}`
+  savingContext.value = key
+  error.value = ''
+  try {
+    const path = scope === 'workspace' ? `/installations/${scopeId}/context` : `/repos/${scopeId}/context`
+    await api(path, { method: 'PUT', body: JSON.stringify({ markdown }) })
+    contextFiles.value = { ...contextFiles.value, [scope]: { ...contextFiles.value[scope], [scopeId]: markdown } }
+  } catch (err) { error.value = err.message }
+  finally { savingContext.value = '' }
+}
+
+function openSettings() {
+  page.value = 'settings'
+  if (!contextLoaded.value) loadContextFiles()
+}
+
 function updatePullPolling() {
   if (pullPollTimer) clearInterval(pullPollTimer)
   pullPollTimer = null
-  if (selected.value && tab.value === 'pulls' && pulls.value.some(pull => ['pending', 'processing'].includes(pull.status))) {
-    pullPollTimer = setInterval(loadPulls, 5000)
+  if (selected.value && page.value === 'dashboard') {
+    pullPollTimer = setInterval(() => {
+      loadPulls(selected.value, true)
+      loadUsage(true)
+    }, 15000)
   }
 }
 
-async function loadPulls() {
-  if (!selected.value) return
+async function loadPulls(repoId = selected.value, silent = false) {
+  if (!repoId) return
+  if (selected.value === repoId && !silent) pullsLoading.value = true
   try {
-    pulls.value = await api(`/repos/${selected.value}/pulls`)
-    updatePullPolling()
-  } catch (err) { error.value = err.message }
+    const results = await api(`/repos/${repoId}/pulls`)
+    if (selected.value === repoId) {
+      pulls.value = results
+      updatePullPolling()
+    }
+  } catch (err) { if (selected.value === repoId) error.value = err.message }
+  finally { if (selected.value === repoId && !silent) pullsLoading.value = false }
 }
 
 async function loadBook(repoId = selected.value) {
   if (!repoId) return
+  if (selected.value === repoId) bookDataLoading.value = true
   try {
     const data = await api(`/repos/${repoId}/book`)
     if (selected.value === repoId) book.value = data
   }
-  catch (err) { error.value = err.message }
+  catch (err) { if (selected.value === repoId) error.value = err.message }
+  finally { if (selected.value === repoId) bookDataLoading.value = false }
 }
 
 async function loadChat(repoId = selected.value) {
   if (!repoId) return
+  if (selected.value === repoId) chatHistoryLoading.value = true
   try {
     const data = await api(`/repos/${repoId}/chat`)
     if (selected.value === repoId) {
@@ -102,36 +150,49 @@ async function loadChat(repoId = selected.value) {
       chatBookReady.value = data.book_ready
       chatBookMock.value = data.book_is_mock
     }
-  } catch (err) { error.value = err.message }
+  } catch (err) { if (selected.value === repoId) error.value = err.message }
+  finally { if (selected.value === repoId) chatHistoryLoading.value = false }
 }
 
 async function selectTab(value) {
   tab.value = value
   updatePullPolling()
-  updateTaskPolling()
+  updateSessionPolling()
   if (value === 'book') await loadBook()
   if (value === 'pulls') await loadPulls()
   if (value === 'chat') await loadChat()
-  if (value === 'tasks') await loadAgentTasks()
+  if (value === 'tasks') await loadWorkSessions()
 }
 
-function updateTaskPolling() {
-  if (taskPollTimer) clearInterval(taskPollTimer)
-  taskPollTimer = null
-  if (selected.value && tab.value === 'tasks' && agentTasks.value.some(task => ['queued', 'running'].includes(task.state))) {
-    taskPollTimer = setInterval(loadAgentTasks, 4000)
+function updateSessionPolling() {
+  if (sessionPollTimer) clearInterval(sessionPollTimer)
+  sessionPollTimer = null
+  if (selected.value && ['dashboard', 'session'].includes(page.value)) {
+    sessionPollTimer = setInterval(() => loadWorkSessions(selected.value, true), 15000)
   }
 }
 
-async function loadAgentTasks(repoId = selected.value) {
+async function loadWorkSessions(repoId = selected.value, silent = false) {
   if (!repoId) return
+  if (selected.value === repoId && !silent) sessionsLoading.value = true
   try {
-    const results = await api(`/repos/${repoId}/tasks`)
+    const sessions = await api(`/repos/${repoId}/work-sessions`)
     if (selected.value === repoId) {
-      agentTasks.value = results
-      updateTaskPolling()
+      workSessions.value = sessions
+      updateSessionPolling()
     }
-  } catch (err) { error.value = err.message }
+  } catch (err) { if (selected.value === repoId) error.value = err.message }
+  finally { if (selected.value === repoId && !silent) sessionsLoading.value = false }
+}
+
+async function loadUsage(silent = false) {
+  try { usage.value = await api('/usage') }
+  catch (err) { if (!silent) error.value = err.message }
+}
+
+async function loadRepositorySummary(repoId) {
+  if (!repoId) return
+  await Promise.all([loadPulls(repoId), loadWorkSessions(repoId), loadUsage()])
 }
 
 async function submitAgentTask(task) {
@@ -142,26 +203,45 @@ async function submitAgentTask(task) {
     const result = await api(`/repos/${selected.value}/tasks`, {
       method: 'POST', body: JSON.stringify(task),
     })
-    agentTasks.value.unshift(result)
-    updateTaskPolling()
+    if (page.value === 'session') {
+      sessionWorkspaceId.value = result.work_session_id
+      sessionInitialDraft.value = null
+    }
+    await loadWorkSessions(selected.value, true)
+    updateSessionPolling()
+    await loadPulls(selected.value, true)
   } catch (err) { error.value = err.message }
   finally { taskSubmitting.value = false }
 }
 
-watch(selected, async () => {
+async function retryWorkSession(workSessionId) {
+  if (!selected.value) return
+  try {
+    await api(`/repos/${selected.value}/work-sessions/${workSessionId}/retry`, { method: 'POST' })
+    await loadWorkSessions(selected.value, true)
+  } catch (err) { error.value = err.message }
+}
+
+watch(selected, async (repoId) => {
   pulls.value = []
+  pullsLoading.value = Boolean(repoId)
   book.value = { sections: [], documents: [], build_summary: null }
+  bookDataLoading.value = Boolean(repoId)
   bookProgress.value = null
   chatMessages.value = []
   chatBookReady.value = false
   chatBookMock.value = false
-  agentTasks.value = []
+  chatHistoryLoading.value = Boolean(repoId)
+  workSessions.value = []
+  sessionsLoading.value = Boolean(repoId)
   updatePullPolling()
-  updateTaskPolling()
-  if (tab.value === 'book') await loadBook()
-  else if (tab.value === 'chat') await loadChat()
-  else if (tab.value === 'tasks') await loadAgentTasks()
-  else if (tab.value === 'pulls') await loadPulls()
+  updateSessionPolling()
+  await loadRepositorySummary(repoId)
+}, { immediate: true })
+
+watch(page, () => {
+  updatePullPolling()
+  updateSessionPolling()
 })
 
 async function setMode(repoId, mode) {
@@ -183,8 +263,25 @@ async function toggleRepo(repoId) {
 }
 
 function selectRepository(repoId) {
+  const unchanged = selected.value === repoId
   selected.value = repoId
   page.value = 'dashboard'
+  sessionWorkspaceId.value = null
+  sessionInitialDraft.value = null
+  if (unchanged) loadRepositorySummary(repoId)
+}
+
+function openSessionWorkspace(sessionId) {
+  sessionWorkspaceId.value = sessionId
+  sessionInitialDraft.value = null
+  page.value = 'session'
+  loadWorkSessions(selected.value)
+}
+
+function startSessionWorkspace(draft = null) {
+  sessionWorkspaceId.value = null
+  sessionInitialDraft.value = draft
+  page.value = 'session'
 }
 
 async function rebuildBook() {
@@ -231,7 +328,7 @@ async function askRepoQuestion(question) {
   try {
     const result = await api(`/repos/${repoId}/chat`, { method: 'POST', body: JSON.stringify({ question }) })
     if (selected.value === repoId) chatMessages.value.push(result.user_message, result.assistant_message)
-    try { usage.value = await api('/usage') } catch { /* The answer already succeeded; usage can refresh next time. */ }
+    await loadUsage(true)
   } catch (err) {
     await loadChat(repoId)
     error.value = err.message
@@ -263,24 +360,23 @@ async function logout() {
   repos.value = []
   installations.value = []
   pulls.value = []
-  agentTasks.value = []
+  workSessions.value = []
   selected.value = null
 }
 
 onMounted(async () => {
   await init()
-  if (selected.value) await loadPulls()
 })
 onUnmounted(() => {
   if (pullPollTimer) clearInterval(pullPollTimer)
-  if (taskPollTimer) clearInterval(taskPollTimer)
+  if (sessionPollTimer) clearInterval(sessionPollTimer)
   if (bookPollTimer) clearTimeout(bookPollTimer)
 })
 </script>
 
 <template>
   <div class="app-shell">
-    <AppSidebar
+    <AppSidebar v-if="page !== 'session'"
       :user="user"
       :signed-in="signedIn"
       :loading="loading"
@@ -289,13 +385,13 @@ onUnmounted(() => {
       :installations="installations"
       :page="page"
       @select="selectRepository"
-      @settings="page = 'settings'"
+      @settings="openSettings"
       @connect="installLink"
     />
 
-    <main class="main-shell">
-      <TopBar :repository="current" :signed-in="signedIn" :page="page" />
-      <div class="content-shell">
+    <main class="main-shell" :class="{ 'session-main-shell': page === 'session' }">
+      <TopBar v-if="page !== 'session'" :repository="current" :signed-in="signedIn" :page="page" />
+      <div class="content-shell" :class="{ 'session-content-shell': page === 'session' }">
         <div v-if="error" class="alert" role="alert">
           <span class="alert-icon">!</span><p>{{ error }}</p>
           <button class="icon-button" aria-label="Dismiss alert" @click="error = ''">×</button>
@@ -320,10 +416,27 @@ onUnmounted(() => {
           :user="user"
           :installations="installations"
           :repos="repos"
+          :contexts="contextFiles"
+          :context-loading="contextLoading"
+          :saving-context="savingContext"
           @connect="installLink"
           @mode="setMode"
           @toggle-repo="toggleRepo"
           @logout="logout"
+          @save-workspace-context="(id, markdown) => saveContextFile('workspace', id, markdown)"
+          @save-repository-context="(id, markdown) => saveContextFile('repository', id, markdown)"
+        />
+
+        <SessionWorkspace
+          v-else-if="page === 'session' && current"
+          :repository="current"
+          :session="workspaceSession"
+          :initial-draft="sessionInitialDraft"
+          :submitting="taskSubmitting"
+          @back="page = 'dashboard'; tab = 'tasks'"
+          @submit="submitAgentTask"
+          @retry-session="retryWorkSession"
+          @clear-draft="sessionInitialDraft = null"
         />
 
         <section v-else-if="!repos.length" class="welcome-card">
@@ -340,28 +453,34 @@ onUnmounted(() => {
           v-else
           :repository="current"
           :pulls="pulls"
+          :pulls-loading="pullsLoading"
           :book="book"
+          :book-data-loading="bookDataLoading"
           :book-progress="bookProgress"
           :chat-messages="chatMessages"
           :chat-book-ready="chatBookReady"
           :chat-book-mock="chatBookMock"
+          :chat-history-loading="chatHistoryLoading"
           :chat-loading="chatLoading"
           :usage="usage"
           :total-cost="totalCost"
           :tab="tab"
           :book-loading="bookLoading"
-          :agent-tasks="agentTasks"
-          :task-submitting="taskSubmitting"
+          :work-sessions="workSessions"
+          :sessions-loading="sessionsLoading"
           @connect="installLink"
           @tab="selectTab"
           @rebuild-book="rebuildBook"
           @ask-chat="askRepoQuestion"
           @clear-chat="clearRepoChat"
-          @submit-task="submitAgentTask"
-          @refresh-pulls="loadPulls"
+          @retry-work-session="retryWorkSession"
+          @open-session="openSessionWorkspace"
+          @new-session="startSessionWorkspace()"
+          @start-session="startSessionWorkspace"
+          @refresh-pulls="() => loadPulls()"
         />
 
-        <footer class="app-footer"><span>Made for thoughtful code review</span><span>KODO AI <i>·</i> PRIVATE BY DESIGN</span></footer>
+        <footer v-if="page !== 'session'" class="app-footer"><span>Made for thoughtful code review</span><span>KODO AI <i>·</i> PRIVATE BY DESIGN</span></footer>
       </div>
     </main>
   </div>

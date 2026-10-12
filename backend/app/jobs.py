@@ -2,15 +2,20 @@
 import json
 import hashlib
 import re
+import logging
+import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from sqlalchemy import select, update
 from . import ai, config
 from .db import SessionLocal
-from .coding_tasks import process_coding_task
+from .coding_tasks import process_coding_task, process_coding_session
 from .integrations import github_request, installation_token, pull_files
+from .maintainer_context import format_context, load_context
 from .models import BackgroundJob, BookDocument, RepoBookSection, PullRequest, Repository, UsageRecord
+
+log = logging.getLogger("kodo.jobs")
 
 BOT_MARKER = "<!-- kodo-ai-summary -->"
 TEXT_SUFFIXES = {".py", ".js", ".ts", ".vue", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".sql", ".md", ".toml", ".yaml", ".yml", ".json", ".tsx", ".jsx", ".css", ".html", ".sh"}
@@ -34,11 +39,14 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
     try:
         repo = db.get(Repository, repo_id)
         if not repo or not repo.enabled:
+            log.info("PR review skipped: repository_id=%s enabled=%s pr=%s", repo_id, bool(repo and repo.enabled), number)
             return True
         pr_data = payload["pull_request"]
         event_sha = (pr_data.get("head") or {}).get("sha", "")
+        log.info("PR review started: repo=%s pr=%s title=%r head=%s", repo.full_name, number, pr_data.get("title", ""), event_sha[:12])
         pr = db.scalar(select(PullRequest).where(PullRequest.repository_id == repo_id, PullRequest.number == number))
         if pr and pr.head_sha and event_sha and pr.head_sha != event_sha:
+            log.info("PR review superseded: repo=%s pr=%s queued_head=%s latest_head=%s", repo.full_name, number, event_sha[:12], pr.head_sha[:12])
             return True  # a newer webhook already superseded this queued analysis
         if not pr:
             pr = PullRequest(repository_id=repo_id, number=number)
@@ -53,10 +61,13 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
 
         token = installation_token(repo.installation_id)
         files = pull_files(repo.full_name, number, token)
+        log.info("PR review fetched files: repo=%s pr=%s files=%s", repo.full_name, number, len(files))
         context = ai.pr_prompt(pr.title, pr_data.get("body") or "", files, _book_context(db, repo_id))
         did_analyze = pr.analysis_sha != pr.head_sha or not pr.summary
         if did_analyze:
+            log.info("PR analysis started: repo=%s pr=%s mode=%s", repo.full_name, number, repo.review_mode)
             result = ai.analyze("pr", ai.PR_INSTRUCTIONS, context, repo.review_mode)
+            log.info("PR analysis finished: repo=%s pr=%s model=%s findings=%s", repo.full_name, number, result.get("model", "unknown"), len(result.get("findings", [])))
             pr.summary = result.get("summary", "")
             pr.findings_json = json.dumps(result.get("findings", []))
             pr.analysis_sha = pr.head_sha
@@ -66,6 +77,7 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
         if latest["head"]["sha"] != pr.head_sha:
             pr.status = "outdated"
             db.commit()
+            log.info("PR review discarded as outdated: repo=%s pr=%s analyzed_head=%s current_head=%s", repo.full_name, number, pr.head_sha[:12], latest["head"]["sha"][:12])
             return True
         summary = result.get("summary", "")
         findings = result.get("findings", [])
@@ -83,8 +95,10 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
         bot_comment = next((c for c in comments if BOT_MARKER in c.get("body", "")), None)
         if bot_comment:
             github_request("PATCH", f"/repos/{repo.full_name}/issues/comments/{bot_comment['id']}", token, json={"body": body})
+            log.info("PR summary comment updated: repo=%s pr=%s", repo.full_name, number)
         else:
             github_request("POST", f"/repos/{repo.full_name}/issues/{number}/comments", token, json={"body": body})
+            log.info("PR summary comment created: repo=%s pr=%s", repo.full_name, number)
 
         by_path = {f["filename"]: f for f in files}
         inline = []
@@ -105,6 +119,12 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
                 inline = [c for c in inline if (pr.head_sha, c["path"], c["line"], c["body"]) not in seen]
                 if inline:
                     github_request("POST", f"/repos/{repo.full_name}/pulls/{number}/reviews", token, json={"commit_id": pr.head_sha, "event": "COMMENT", "body": "Kodo found actionable issues on changed lines.", "comments": inline[:20]})
+                    log.info("PR inline findings posted: repo=%s pr=%s count=%s", repo.full_name, number, min(len(inline), 20))
+                else:
+                    log.info("PR inline findings skipped: repo=%s pr=%s reason=already_posted", repo.full_name, number)
+        else:
+            log.info("PR inline findings skipped: repo=%s pr=%s reason=no_findings_on_added_lines findings=%s", repo.full_name, number, len(findings))
+        log.info("PR review completed: repo=%s pr=%s findings=%s analyzed=%s", repo.full_name, number, len(findings), did_analyze)
         return True
     except Exception as error:
         db.rollback()
@@ -113,8 +133,7 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
             existing.status = "failed"
             db.commit()
         # Let server logging capture exception type without credentials or response payloads.
-        import logging
-        logging.getLogger("kodo.jobs").exception("Pull request job failed (%s)", type(error).__name__)
+        log.exception("Pull request processing failed: repo_id=%s pr=%s error=%s", repo_id, number, error)
         return False
     finally:
         db.close()
@@ -202,6 +221,8 @@ def build_repo_book(repo_id: int, progress_callback=None):
         repo = db.get(Repository, repo_id)
         if not repo or not repo.enabled:
             return True
+        workspace_markdown, repository_markdown = load_context(db, repo.installation_id, repo_id)
+        maintainer_context = format_context(workspace_markdown, repository_markdown)
         token = installation_token(repo.installation_id)
         meta = github_request("GET", f"/repos/{repo.full_name}", token)
         branch = meta.get("default_branch", "main")
@@ -329,8 +350,15 @@ def build_repo_book(repo_id: int, progress_callback=None):
 
         module_context = "\n".join(f"{module}: {summary}" for module, summary in module_summaries.items())
         inventory = "\n".join(f"- {path}" for path, _ in files_summary)
+        maintainer_sources = []
+        if workspace_markdown.strip():
+            maintainer_sources.append("SOURCE: Workspace context (maintainer-maintained Markdown)\n" + workspace_markdown)
+        if repository_markdown.strip():
+            maintainer_sources.append("SOURCE: Repository context (maintainer-maintained Markdown)\n" + repository_markdown)
         guide_context = (
-            "REPOSITORY FILE INVENTORY (only these paths may be cited):\n" + inventory[:12000]
+            (("MAINTAINER-PROVIDED CONTEXT (use for product and operational understanding; repository-specific context overrides workspace context):\n"
+             + "\n\n".join(maintainer_sources)[:18000] + "\n\n") if maintainer_context else "")
+            + "REPOSITORY FILE INVENTORY (only these paths may be cited):\n" + inventory[:12000]
             + "\n\nMODULE SUMMARIES:\n" + module_context[:16000]
             + "\n\nDIRECT PRODUCT / OPERATIONS DOCUMENTATION:\n" + "\n\n".join(guide_material)
         )[:config.MAX_DIFF_CHARS]
@@ -345,6 +373,10 @@ def build_repo_book(repo_id: int, progress_callback=None):
             instructions = _repo_book_guide_instructions()
             result = ai.analyze("repo_book_guide", instructions, guide_context)
             allowed_paths = {path for path, _ in files_summary}
+            if workspace_markdown.strip():
+                allowed_paths.add("Workspace context")
+            if repository_markdown.strip():
+                allowed_paths.add("Repository context")
             generated = result.get("sections", [])
             replacement_sections = []
             seen_slugs = set()
@@ -449,9 +481,9 @@ def _clean_guide_blocks(value):
 def _repo_book_guide_instructions():
     return '''Return ONLY JSON with {"sections":[{"title":"...","category":"...","audiences":[...],"summary":"...","blocks":[...],"source_paths":[...]}]}. Create a repository-specific table of contents. Do not use a fixed set of chapter names or force standard product, business, operations, support, or architecture chapters. Infer useful chapters from the actual subsystems, product concepts, workflows, documentation, and boundaries visible in the supplied repository. Use natural titles that describe this repository's own features and concepts. Merge overlapping topics. Include a chapter only when the sources support a useful explanation. Return fewer chapters when evidence is limited; return [] rather than empty/template chapters when nothing meaningful can be written.
 
-This is a practical guide for new hires and engineering, operations, support, and sales. Write plainly and explain local terms. Use only evidence in the supplied repository inventory, module summaries, and direct documentation. Do not infer customers, market, business value, policies, deployment steps, commands, user journeys, or operational procedures. Omit unsupported topics entirely; do not write “no information was provided”, “not documented”, generic placeholders, or evidence-gap chapters. Avoid generic introductions, repeated summaries, filler, and claims like “robust/scalable/seamless”.
+This is a practical guide for new hires and engineering, operations, support, and sales. Write plainly and explain local terms. Use maintainer context for product, users, business rules, and operational knowledge; use repository inventory, module summaries, and direct documentation for code behavior and implementation. Repository context takes precedence over workspace context when they conflict. Do not infer customers, market, business value, policies, deployment steps, commands, user journeys, or operational procedures unless those sources support them. Omit unsupported topics entirely; do not write “no information was provided”, “not documented”, generic placeholders, or evidence-gap chapters. Avoid generic introductions, repeated summaries, filler, and claims like “robust/scalable/seamless”.
 
-Each chapter must teach a concrete repository-specific idea and include a short summary plus 2-6 useful blocks. Group related components; do not create one chapter per file or directory. Return at most 12 chapters so each one can be detailed and reviewed. Block formats: {"type":"paragraph","text":"..."}, {"type":"bullets","items":[...]}, {"type":"steps","items":[...]}, {"type":"table","columns":[...],"rows":[...]}, {"type":"callout","label":"...","text":"..."}. Prefer tables for mappings when useful. Use steps only for an evidenced sequence. Include relative paths inline in factual explanations. source_paths must contain exact inventory paths that directly support the chapter; chapters without support must be omitted. Aim for 80-200 words per chapter, using more only where the repository has real detail. Audience values: everyone, developers, operations, support, sales.'''
+Each chapter must teach a concrete repository-specific idea and include a short summary plus 2-6 useful blocks. Group related components; do not create one chapter per file or directory. Return at most 12 chapters so each one can be detailed and reviewed. Block formats: {"type":"paragraph","text":"..."}, {"type":"bullets","items":[...]}, {"type":"steps","items":[...]}, {"type":"table","columns":[...],"rows":[...]}, {"type":"callout","label":"...","text":"..."}. Prefer tables for mappings when useful. Use steps only for an evidenced sequence. Include relative paths inline in factual explanations. source_paths must cite exact supporting inventory paths and may cite the exact labels "Workspace context" or "Repository context" when maintainer Markdown supports a claim. Chapters without supporting sources must be omitted. Aim for 80-200 words per chapter, using more only where the repository has real detail. Audience values: everyone, developers, operations, support, sales.'''
 
 def _guide_block_text(blocks):
     values = []
@@ -466,6 +498,7 @@ def _is_empty_chapter_text(value: str) -> bool:
 
 def run_background_job(job_id: int):
     """Claim a persisted job and retry transient failures, surviving process restarts."""
+    rerun_requested = False
     db = SessionLocal()
     try:
         claimed = db.execute(update(BackgroundJob).where(BackgroundJob.id == job_id, BackgroundJob.state == "queued").values(state="running", updated_at=datetime.utcnow()))
@@ -474,6 +507,7 @@ def run_background_job(job_id: int):
             return
         job = db.get(BackgroundJob, job_id)
         kind, payload = job.kind, json.loads(job.payload)
+        log.info("Background job claimed: job_id=%s kind=%s", job_id, kind)
     finally:
         db.close()
     succeeded, last_error = False, ""
@@ -492,7 +526,7 @@ def run_background_job(job_id: int):
         finally:
             progress_db.close()
 
-    max_attempts = 1 if kind == "coding_task" else 3
+    max_attempts = 1 if kind in {"coding_task", "coding_session"} else 3
     for attempt in range(1, max_attempts + 1):
         db = SessionLocal()
         try:
@@ -505,20 +539,26 @@ def run_background_job(job_id: int):
         finally:
             db.close()
         try:
+            log.info("Background job attempt started: job_id=%s kind=%s attempt=%s/%s", job_id, kind, attempt, max_attempts)
             if kind == "pull_request":
                 succeeded = process_pull_request(payload["repository_id"], payload["number"], payload["event"])
             elif kind == "repo_book":
                 succeeded = build_repo_book(payload["repository_id"], progress_callback=save_progress)
             elif kind == "coding_task":
                 succeeded = process_coding_task(payload["task_id"])
+            elif kind == "coding_session":
+                succeeded = process_coding_session(payload["session_id"])
             else:
                 last_error = "Unknown background job kind"
                 break
             if succeeded:
+                log.info("Background job attempt succeeded: job_id=%s kind=%s attempt=%s", job_id, kind, attempt)
                 break
             last_error = "Job failed; retrying"
+            log.warning("Background job attempt failed: job_id=%s kind=%s attempt=%s", job_id, kind, attempt)
         except Exception as error:
             last_error = type(error).__name__
+            log.exception("Background job raised an exception: job_id=%s kind=%s attempt=%s error=%s", job_id, kind, attempt, error)
             if kind == "repo_book":
                 progress = payload.get("progress", {})
                 progress.update({"phase": "retrying", "message": f"Temporary failure ({last_error}); resuming saved batches", "updated_at": datetime.utcnow().isoformat()})
@@ -531,7 +571,10 @@ def run_background_job(job_id: int):
     try:
         row = db.get(BackgroundJob, job_id)
         if row:
-            row.state = "complete" if succeeded else "failed"
+            final_payload = json.loads(row.payload or "{}")
+            rerun_requested = kind == "coding_session" and bool(final_payload.pop("rerun_requested", False))
+            row.payload = json.dumps(final_payload)
+            row.state = "queued" if rerun_requested else "complete" if succeeded else "failed"
             row.last_error = "" if succeeded else last_error
             if not succeeded and kind == "repo_book":
                 progress = json.loads(row.payload or "{}").get("progress", {})
@@ -541,5 +584,8 @@ def run_background_job(job_id: int):
                 row.payload = json.dumps(data)
             row.updated_at = datetime.utcnow()
             db.commit()
+            log.info("Background job finished: job_id=%s kind=%s state=%s attempts=%s", job_id, kind, row.state, row.attempts)
     finally:
         db.close()
+    if rerun_requested:
+        threading.Thread(target=run_background_job, args=(job_id,), daemon=True).start()
