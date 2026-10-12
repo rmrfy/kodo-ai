@@ -91,7 +91,7 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
 
         # Upsert the bot's single summary comment for this PR.
         comments = github_request("GET", f"/repos/{repo.full_name}/issues/{number}/comments", token, params={"per_page": 100}) or []
-        body = f"{BOT_MARKER}\n## Kodo AI summary\n\n{summary}\n\n_Review mode: {repo.review_mode} · Model: {result.get('model', 'mock')}_"
+        body = f"{BOT_MARKER}\n## kodai summary\n\n{summary}\n\n_Review mode: {repo.review_mode} · Model: {result.get('model', 'mock')}_"
         bot_comment = next((c for c in comments if BOT_MARKER in c.get("body", "")), None)
         if bot_comment:
             github_request("PATCH", f"/repos/{repo.full_name}/issues/comments/{bot_comment['id']}", token, json={"body": body})
@@ -118,7 +118,7 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
                 seen = {(c.get("commit_id"), c.get("path"), c.get("line"), c.get("body")) for c in existing_comments}
                 inline = [c for c in inline if (pr.head_sha, c["path"], c["line"], c["body"]) not in seen]
                 if inline:
-                    github_request("POST", f"/repos/{repo.full_name}/pulls/{number}/reviews", token, json={"commit_id": pr.head_sha, "event": "COMMENT", "body": "Kodo found actionable issues on changed lines.", "comments": inline[:20]})
+                    github_request("POST", f"/repos/{repo.full_name}/pulls/{number}/reviews", token, json={"commit_id": pr.head_sha, "event": "COMMENT", "body": "kodai found actionable issues on changed lines.", "comments": inline[:20]})
                     log.info("PR inline findings posted: repo=%s pr=%s count=%s", repo.full_name, number, min(len(inline), 20))
                 else:
                     log.info("PR inline findings skipped: repo=%s pr=%s reason=already_posted", repo.full_name, number)

@@ -36,11 +36,11 @@ function saveRepositoryContext() {
 <template>
   <div class="settings-page">
     <div class="settings-heading">
-      <div><span class="eyebrow">WORKSPACE</span><h1>Settings</h1><p>Manage your GitHub connection and how Kodo works across repositories.</p></div>
+      <div><span class="eyebrow">WORKSPACE</span><h1>Settings</h1><p>Manage your GitHub connection and how kodai works across repositories.</p></div>
     </div>
 
     <section class="settings-section">
-      <div class="settings-section-heading"><div><h2>Account</h2><p>Your Kodo workspace is linked to your GitHub account.</p></div></div>
+      <div class="settings-section-heading"><div><h2>Account</h2><p>Your kodai workspace is linked to your GitHub account.</p></div></div>
       <div class="settings-account-row">
         <div class="settings-account-avatar">{{ user.slice(0, 1).toUpperCase() || 'K' }}</div>
         <div class="settings-account-copy"><strong>{{ user || 'GitHub account' }}</strong><span>Connected through GitHub OAuth</span></div>
@@ -50,7 +50,7 @@ function saveRepositoryContext() {
 
     <section class="settings-section">
       <div class="settings-section-heading">
-        <div><h2>GitHub access</h2><p>Kodo can work with repositories covered by these GitHub App installations.</p></div>
+        <div><h2>GitHub access</h2><p>kodai can work with repositories covered by these GitHub App installations.</p></div>
         <button class="button button-secondary" @click="$emit('connect')">＋ Connect repository</button>
       </div>
       <div v-if="installations.length" class="installation-list">
@@ -64,7 +64,7 @@ function saveRepositoryContext() {
     </section>
 
     <section class="settings-section context-files-section">
-      <div class="settings-section-heading"><div><h2>Maintainer context</h2><p>Keep product and team knowledge in Markdown. Kodo uses it for Handbooks, repository chat, and coding tasks.</p></div><span class="context-format-tag">Markdown</span></div>
+      <div class="settings-section-heading"><div><h2>Maintainer context</h2><p>Keep product and team knowledge in Markdown. kodai uses it for Handbooks, repository chat, and coding tasks.</p></div><span class="context-format-tag">Markdown</span></div>
       <div class="context-editors">
         <article class="context-editor-card">
           <div class="context-editor-heading"><div><h3>Workspace context</h3><p>Shared by repositories in a GitHub App installation.</p></div>

@@ -36,7 +36,7 @@ const filteredPulls = computed(() => {
     <div v-if="loading && !pulls.length" class="empty-state" role="status"><span class="empty-state-icon">↻</span><h3>Loading pull requests</h3><p>Fetching recent review activity for this repository.</p></div>
     <div v-else-if="!pulls.length" class="empty-state">
       <span class="empty-state-icon">⑂</span><h3>No pull requests yet</h3>
-      <p>Open a pull request in this repository. Kodo will summarize the changes and highlight actionable issues.</p>
+      <p>Open a pull request in this repository. kodai will summarize the changes and highlight actionable issues.</p>
     </div>
     <div v-else-if="!filteredPulls.length" class="filtered-empty">No pull requests match this filter.</div>
     <div v-else class="pull-list">
@@ -44,7 +44,7 @@ const filteredPulls = computed(() => {
         <div class="pull-number">#{{ pr.number }}</div>
         <div class="pull-body">
           <a class="pull-title" :href="pr.url" target="_blank" rel="noreferrer"><span>{{ pr.title }}</span><span class="external-link">↗</span></a>
-          <p class="pull-summary">{{ pr.summary || (pr.status === 'processing' ? 'Kodo is analyzing this pull request…' : pr.status === 'failed' ? 'Analysis failed. Check the backend logs and background job details.' : 'Summary will appear here when analysis completes.') }}</p>
+          <p class="pull-summary">{{ pr.summary || (pr.status === 'processing' ? 'kodai is analyzing this pull request…' : pr.status === 'failed' ? 'Analysis failed. Check the backend logs and background job details.' : 'Summary will appear here when analysis completes.') }}</p>
           <div class="pull-meta"><span>by {{ pr.author }}</span><span class="meta-dot">·</span><time :datetime="pr.updated_at">{{ new Date(pr.updated_at).toLocaleDateString() }}</time><span v-if="pr.findings.length" class="finding-count">{{ pr.findings.length }} finding{{ pr.findings.length === 1 ? '' : 's' }}</span></div>
           <div v-for="(finding, index) in pr.findings" :key="index" class="finding-row">
             <span class="severity" :class="finding.severity">{{ finding.severity }}</span>
