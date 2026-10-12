@@ -21,7 +21,7 @@ Configure the GitHub App to subscribe to `pull_request`, `push`, `installation`,
 
 ## Coding tasks
 
-The Tasks tab runs requests through Codex CLI in a fresh temporary clone. Install Codex CLI on the backend host, set `OPENAI_API_KEY`, and configure `KODO_CODING_TASKS_ENABLED`, `KODO_CODEX_CLI_PATH`, and `KODO_CODEX_TASK_TIMEOUT_SECONDS` in `backend/.env`. Kodo creates a task branch, pushes the changes, and opens a draft pull request; it never merges automatically. Only one task per repository can run at a time. Task execution uses Codex's `workspace-write` sandbox with shell network access disabled. Keep the task runner on a trusted host and grant the GitHub App only the repository permissions it needs. Changes and task instructions are sent to the configured OpenAI coding agent.
+The Tasks tab runs requests through the configured coding-agent provider in a fresh temporary clone. Codex CLI is the currently supported provider and `codex exec` runs as a bounded background task. Install Codex CLI on the backend host, set `OPENAI_API_KEY`, and configure `KODO_CODING_TASKS_ENABLED`, `KODO_CODING_AGENT_PROVIDER=codex`, `KODO_CODEX_CLI_PATH`, and `KODO_CODING_TASK_TIMEOUT_SECONDS` in `backend/.env`. Kodo passes the key only to the Codex process as `CODEX_API_KEY`; this uses OpenAI API billing and does not rely on a user's ChatGPT/Codex subscription. API-key use is billed through the associated OpenAI Platform account. Kodo creates a task branch, pushes the changes, and opens a draft pull request; it never merges automatically. Only one task per repository can run at a time. Task execution uses Codex's `workspace-write` sandbox with network access disabled, while the clone itself is isolated in a per-task temporary directory. Use a trusted backend host and grant the GitHub App only the repository permissions it needs. Changes and task instructions are sent to the configured coding agent. Progress events and failures are logged without logging command text or credentials. This local process sandbox is not a per-task virtual machine; do not expose task execution to untrusted users without stronger infrastructure isolation.
 
 ## Handbook and privacy
 
@@ -29,4 +29,4 @@ The Handbook indexes text files under 50 KB on the default branch, skips generat
 
 ## Tests
 
-From `backend`, run `../backend/.venv/bin/python -m unittest discover -s tests`. The tests cover review diff-line mapping, mode guidance, bounded PR context, and mock mode. They do not need GitHub credentials or OpenAI credits.
+From `backend`, run `../backend/.venv/bin/python -m unittest discover -s tests`. Tests cover review helpers, provider selection, Codex result/progress normalization, failures and timeouts, and task-runner change detection. The tests do not need GitHub credentials or OpenAI credits.

@@ -218,24 +218,51 @@ def _authorized_repo(db, repo_id: int, session: dict) -> Repository:
     return repo
 
 @app.get("/api/auth/github")
-async def auth_start():
+async def auth_start(request: Request):
     client_id = os.getenv("GITHUB_CLIENT_ID")
     if not client_id:
         raise HTTPException(503, "Set GITHUB_CLIENT_ID to enable dashboard sign-in")
     state = secrets.token_urlsafe(24)
-    response = RedirectResponse(f"https://github.com/login/oauth/authorize?client_id={client_id}&state={state}&scope=offline_access", status_code=302)
-    response.set_cookie("kodo_oauth_state", state, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=600)
+    authorize_url = (
+        "https://github.com/login/oauth/authorize"
+        f"?client_id={quote(client_id, safe='')}"
+        f"&redirect_uri={quote(config.GITHUB_OAUTH_REDIRECT_URI, safe='')}"
+        f"&state={quote(state, safe='')}&scope=offline_access"
+    )
+    response = RedirectResponse(authorize_url, status_code=302)
+    # The callback may be registered at /auth/callback, outside the default
+    # /api/auth cookie path inferred from this start URL.
+    response.set_cookie("kodo_oauth_state", state, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=600, path="/")
+    log.info("Starting GitHub OAuth: host=%s secure_cookie=%s", request.headers.get("host", ""), _cookie_secure())
     return response
 
 @app.get("/auth/callback")  # retain the callback path already configured in the GitHub App
 @app.get("/api/auth/callback")
 async def auth_callback(code: str, state: str, request: Request):
-    if not hmac.compare_digest(request.cookies.get("kodo_oauth_state", ""), state):
+    saved_state = request.cookies.get("kodo_oauth_state", "")
+    state_matches = bool(saved_state) and hmac.compare_digest(saved_state, state)
+    if not state_matches:
+        log.warning(
+            "GitHub OAuth state validation failed: host=%s cookie_present=%s",
+            request.headers.get("host", ""),
+            bool(saved_state),
+        )
         raise HTTPException(400, "Invalid OAuth state")
     client_id, secret = os.getenv("GITHUB_CLIENT_ID"), os.getenv("GITHUB_CLIENT_SECRET")
     if not client_id or not secret:
         raise HTTPException(503, "GitHub OAuth is not configured")
-    response = requests.post("https://github.com/login/oauth/access_token", json={"client_id": client_id, "client_secret": secret, "code": code, "state": state}, headers={"Accept": "application/json"}, timeout=20)
+    response = requests.post(
+        "https://github.com/login/oauth/access_token",
+        json={
+            "client_id": client_id,
+            "client_secret": secret,
+            "code": code,
+            "state": state,
+            "redirect_uri": config.GITHUB_OAUTH_REDIRECT_URI,
+        },
+        headers={"Accept": "application/json"},
+        timeout=20,
+    )
     response.raise_for_status()
     token_data = response.json()
     token = token_data.get("access_token")
@@ -258,7 +285,7 @@ async def auth_callback(code: str, state: str, request: Request):
     finally:
         db.close()
     result = RedirectResponse(config.FRONTEND_ORIGIN, status_code=302)
-    result.delete_cookie("kodo_oauth_state")
+    result.delete_cookie("kodo_oauth_state", path="/")
     result.set_cookie("kodo_session", serializer.dumps(session_id), httponly=True, secure=_cookie_secure(), samesite="lax", max_age=604800)
     return result
 
