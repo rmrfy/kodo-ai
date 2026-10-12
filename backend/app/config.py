@@ -22,6 +22,7 @@ AI_DISABLED = os.getenv("KODO_AI_DISABLED", "false").lower() == "true"
 MAX_DIFF_CHARS = int(os.getenv("KODO_MAX_DIFF_CHARS", "70000"))
 MAX_REPO_FILES = int(os.getenv("KODO_MAX_REPO_FILES", "500"))
 CODING_TASKS_ENABLED = os.getenv("KODO_CODING_TASKS_ENABLED", "true").lower() == "true"
-CODEX_CLI_PATH = os.getenv("KODO_CODEX_CLI_PATH", "codex")
-CODEX_TASK_TIMEOUT_SECONDS = int(os.getenv("KODO_CODEX_TASK_TIMEOUT_SECONDS", "1800"))
+CODING_AGENT_PROVIDER = os.getenv("KODO_CODING_AGENT_PROVIDER", "codex").strip().lower()
+CODING_TASK_TIMEOUT_SECONDS = int(os.getenv("KODO_CODING_TASK_TIMEOUT_SECONDS", "1800"))
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+GITHUB_OAUTH_REDIRECT_URI = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "http://localhost:8000/auth/callback").strip()
