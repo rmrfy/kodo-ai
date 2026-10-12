@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -14,16 +15,17 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 from . import config
-from .db import Base, SessionLocal, engine
-from .integrations import github_request
+from . import ai
+from .db import SessionLocal
+from .integrations import github_request, installation_token
 from .jobs import run_background_job
-from .models import BackgroundJob, BookDocument, Installation, PullRequest, Repository, UsageRecord, UserSession, WebhookDelivery
+from .models import AgentTask, BackgroundJob, BookDocument, Installation, PullRequest, RepoBookSection, RepoChatMessage, Repository, UsageRecord, UserSession, WebhookDelivery
+from .repo_chat import retrieve_book_context
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kodo")
 app = FastAPI(title="Kodo AI", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=[config.FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Content-Type"])
-Base.metadata.create_all(bind=engine)
 SESSION_SECRET = os.getenv("KODO_SESSION_SECRET", "local-only-change-this-secret")
 if os.getenv("ENVIRONMENT", "development").lower() == "production" and SESSION_SECRET == "local-only-change-this-secret":
     raise RuntimeError("KODO_SESSION_SECRET must be set in production")
@@ -81,6 +83,53 @@ def _session(request: Request) -> dict:
 def _user_installations(session: dict) -> set[int]:
     data = github_request("GET", "/user/installations", session["token"], params={"per_page": 100})
     return {x["id"] for x in data.get("installations", [])}
+
+def _sync_user_repositories(db, session: dict) -> set[int]:
+    """Refresh the local repo list so existing installations don't depend on webhook history."""
+    data = github_request("GET", "/user/installations", session["token"], params={"per_page": 100})
+    installations = data.get("installations", [])
+    ids = {item["id"] for item in installations}
+    for item in installations:
+        account = item.get("account") or {}
+        db.merge(Installation(
+            id=item["id"], account=account.get("login", ""),
+            account_type=account.get("type", "User"), suspended=bool(item.get("suspended_at")),
+        ))
+        if item.get("suspended_at"):
+            continue
+        token = installation_token(item["id"])
+        visible = set()
+        for page in range(1, 11):
+            result = github_request("GET", "/installation/repositories", token,
+                                    params={"per_page": 100, "page": page}) or {}
+            batch = result.get("repositories", [])
+            for repo in batch:
+                visible.add(repo["id"])
+                saved = db.get(Repository, repo["id"])
+                if saved:
+                    saved.installation_id = item["id"]
+                    saved.full_name = repo["full_name"]
+                    saved.private = repo.get("private", True)
+                else:
+                    db.add(Repository(
+                        id=repo["id"], installation_id=item["id"],
+                        full_name=repo["full_name"], private=repo.get("private", True),
+                    ))
+            if len(batch) < 100:
+                break
+        stale = db.scalars(select(Repository).where(
+            Repository.installation_id == item["id"],
+        )).all()
+        for repo in stale:
+            if repo.id not in visible:
+                db.query(PullRequest).filter(PullRequest.repository_id == repo.id).delete()
+                db.query(BookDocument).filter(BookDocument.repository_id == repo.id).delete()
+                db.query(RepoBookSection).filter(RepoBookSection.repository_id == repo.id).delete()
+                db.query(RepoChatMessage).filter(RepoChatMessage.repository_id == repo.id).delete()
+                db.query(AgentTask).filter(AgentTask.repository_id == repo.id).delete()
+                db.query(UsageRecord).filter(UsageRecord.repository_id == repo.id).delete()
+                db.delete(repo)
+    return ids
 
 def _authorized_repo(db, repo_id: int, session: dict) -> Repository:
     repo = db.get(Repository, repo_id)
@@ -162,9 +211,10 @@ async def app_install_url(request: Request):
 @app.get("/api/repos")
 async def repositories(request: Request):
     session = _session(request)
-    ids = _user_installations(session)
     db = SessionLocal()
     try:
+        ids = _sync_user_repositories(db, session)
+        db.commit()
         rows = db.scalars(select(Repository).where(Repository.installation_id.in_(ids))).all() if ids else []
         return [{"id": r.id, "installation_id": r.installation_id, "full_name": r.full_name, "private": r.private, "enabled": r.enabled, "review_mode": r.review_mode} for r in rows]
     finally:
@@ -187,6 +237,60 @@ async def update_repository(repo_id: int, request: Request):
     finally:
         db.close()
 
+def _agent_task_response(task: AgentTask):
+    return {
+        "id": task.id, "repository_id": task.repository_id, "github_login": task.github_login,
+        "title": task.title, "instructions": task.instructions, "state": task.state,
+        "branch": task.branch, "commit_sha": task.commit_sha,
+        "pull_request_number": task.pull_request_number, "pull_request_url": task.pull_request_url,
+        "summary": task.summary, "error": task.error,
+        "created_at": task.created_at.isoformat(), "updated_at": task.updated_at.isoformat(),
+    }
+
+@app.get("/api/repos/{repo_id}/tasks")
+async def list_agent_tasks(repo_id: int, request: Request):
+    session = _session(request)
+    db = SessionLocal()
+    try:
+        _authorized_repo(db, repo_id, session)
+        rows = db.scalars(select(AgentTask).where(AgentTask.repository_id == repo_id).order_by(AgentTask.created_at.desc()).limit(50)).all()
+        return [_agent_task_response(row) for row in rows]
+    finally:
+        db.close()
+
+@app.post("/api/repos/{repo_id}/tasks", status_code=202)
+async def create_agent_task(repo_id: int, request: Request, background_tasks: BackgroundTasks):
+    if not config.CODING_TASKS_ENABLED:
+        raise HTTPException(503, "Coding tasks are disabled by backend configuration")
+    session = _session(request)
+    body = await request.json()
+    title = body.get("title", "") if isinstance(body, dict) else ""
+    instructions = body.get("instructions", "") if isinstance(body, dict) else ""
+    if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
+        raise HTTPException(422, "Enter a task title up to 200 characters")
+    if not isinstance(instructions, str) or len(instructions.strip()) < 10 or len(instructions) > 8000:
+        raise HTTPException(422, "Describe the task in 10 to 8,000 characters")
+    db = SessionLocal()
+    try:
+        _authorized_repo(db, repo_id, session)
+        active_count = db.scalar(select(func.count(AgentTask.id)).where(
+            AgentTask.repository_id == repo_id, AgentTask.state.in_(["queued", "running"]),
+        )) or 0
+        if active_count:
+            raise HTTPException(409, "This repository already has a coding task in progress")
+        task = AgentTask(
+            repository_id=repo_id, github_user_id=session["id"], github_login=session["login"],
+            title=title.strip(), instructions=instructions.strip(), state="queued",
+        )
+        db.add(task)
+        db.flush()
+        job = _queue_job(db, background_tasks, "coding_task", f"agent-task:{task.id}", {"task_id": task.id})
+        db.commit()
+        db.refresh(task)
+        return _agent_task_response(task)
+    finally:
+        db.close()
+
 @app.get("/api/repos/{repo_id}/pulls")
 async def pull_requests(repo_id: int, request: Request):
     session = _session(request); db = SessionLocal()
@@ -202,22 +306,192 @@ async def repo_book(repo_id: int, request: Request):
     try:
         _authorized_repo(db, repo_id, session)
         docs = db.scalars(select(BookDocument).where(BookDocument.repository_id == repo_id).order_by(BookDocument.kind, BookDocument.path)).all()
-        return [{"id": d.id, "kind": d.kind, "path": d.path, "title": d.title, "content": d.content, "stale": d.stale, "updated_at": d.updated_at.isoformat()} for d in docs]
+        manifest = next((doc for doc in docs if doc.kind == "manifest"), None)
+        try:
+            build_summary = json.loads(manifest.content) if manifest else None
+            if build_summary is not None:
+                build_summary["stale"] = manifest.stale
+        except json.JSONDecodeError:
+            build_summary = None
+        sections = db.scalars(select(RepoBookSection).where(RepoBookSection.repository_id == repo_id).order_by(RepoBookSection.category, RepoBookSection.slug)).all()
+        return {
+            "sections": [{"id": s.id, "slug": s.slug, "title": s.title, "category": s.category,
+                "audiences": _json_list(s.audiences_json), "summary": s.summary, "blocks": _json_list(s.blocks_json),
+                "source_paths": _json_list(s.source_paths_json), "stale": s.stale, "updated_at": s.updated_at.isoformat()} for s in sections],
+            "documents": [{"id": d.id, "kind": d.kind, "path": d.path, "title": d.title, "content": d.content, "stale": d.stale, "updated_at": d.updated_at.isoformat()} for d in docs if d.kind != "manifest"],
+            "build_summary": build_summary,
+        }
     finally: db.close()
+
+def _chat_message_json(message: RepoChatMessage) -> dict:
+    try:
+        sources = json.loads(message.sources_json or "[]")
+    except json.JSONDecodeError:
+        sources = []
+    return {"id": message.id, "role": message.role, "content": message.content, "sources": sources, "created_at": message.created_at.isoformat()}
+
+def _json_list(value: str) -> list:
+    try:
+        data = json.loads(value or "[]")
+        return data if isinstance(data, list) else []
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+def _section_for_retrieval(section: RepoBookSection):
+    blocks = _json_list(section.blocks_json)
+    parts = [section.summary]
+    for block in blocks:
+        if not isinstance(block, dict): continue
+        if block.get("type") in {"paragraph", "callout"}:
+            parts.append(f"{block.get('label', '')}: {block.get('text', '')}".strip(": "))
+        elif block.get("type") in {"bullets", "steps"}:
+            parts.extend(str(value) for value in block.get("items", []))
+        elif block.get("type") == "table":
+            parts.extend(" | ".join(str(value) for value in [*block.get("columns", []), *row]) for row in block.get("rows", []))
+    return SimpleNamespace(
+        id=f"section-{section.id}", kind="section", title=section.title, path="",
+        content="\n".join(parts), stale=section.stale, source_paths_json=section.source_paths_json,
+    )
+
+@app.get("/api/repos/{repo_id}/chat")
+async def repo_chat_history(repo_id: int, request: Request):
+    session = _session(request); db = SessionLocal()
+    try:
+        _authorized_repo(db, repo_id, session)
+        docs = db.scalars(select(BookDocument).where(BookDocument.repository_id == repo_id, BookDocument.kind != "manifest")).all()
+        sections = db.scalars(select(RepoBookSection).where(RepoBookSection.repository_id == repo_id)).all()
+        rows = db.scalars(select(RepoChatMessage).where(
+            RepoChatMessage.repository_id == repo_id,
+            RepoChatMessage.github_user_id == session["id"],
+        ).order_by(RepoChatMessage.created_at.desc(), RepoChatMessage.id.desc()).limit(60)).all()
+        rows.reverse()
+        book_is_mock = any("Mock Handbook" in doc.content or "mock mode" in doc.content.lower() for doc in docs) or any("AI is disabled" in section.summary for section in sections)
+        return {"book_ready": bool(docs or sections), "book_is_mock": book_is_mock, "messages": [_chat_message_json(row) for row in rows]}
+    finally:
+        db.close()
+
+@app.post("/api/repos/{repo_id}/chat")
+async def ask_repo_chat(repo_id: int, request: Request):
+    session = _session(request)
+    body = await request.json()
+    question = str(body.get("question", "")).strip()
+    if not question:
+        raise HTTPException(422, "Enter a question about this repository")
+    if len(question) > 4000:
+        raise HTTPException(422, "Questions must be 4,000 characters or fewer")
+
+    db = SessionLocal()
+    try:
+        repo = _authorized_repo(db, repo_id, session)
+        documents = db.scalars(select(BookDocument).where(BookDocument.repository_id == repo_id, BookDocument.kind != "manifest").order_by(BookDocument.kind, BookDocument.path)).all()
+        sections = db.scalars(select(RepoBookSection).where(RepoBookSection.repository_id == repo_id).order_by(RepoBookSection.slug)).all()
+        if not documents and not sections:
+            raise HTTPException(409, "Generate the Handbook before asking questions about this repository")
+        if any("Mock Handbook" in doc.content or "mock mode" in doc.content.lower() for doc in documents) or any("AI is disabled" in section.summary for section in sections):
+            raise HTTPException(409, "This Handbook contains mock summaries. Regenerate it with live AI before asking repository questions.")
+        recent = db.scalars(select(RepoChatMessage).where(
+            RepoChatMessage.repository_id == repo_id,
+            RepoChatMessage.github_user_id == session["id"],
+        ).order_by(RepoChatMessage.created_at.desc(), RepoChatMessage.id.desc()).limit(10)).all()
+        recent.reverse()
+        history = [{"role": row.role, "content": row.content} for row in recent]
+        section_docs = [_section_for_retrieval(section) for section in sections]
+        selected_sources = retrieve_book_context(question, [*section_docs, *documents])
+        if not selected_sources:
+            raise HTTPException(409, "The Handbook has no readable notes yet. Regenerate it, then try again.")
+        user_message = RepoChatMessage(repository_id=repo_id, github_user_id=session["id"], role="user", content=question)
+        db.add(user_message)
+        db.commit()
+        db.refresh(user_message)
+        user_message_json = _chat_message_json(user_message)
+    finally:
+        db.close()
+
+    source_refs = [{
+        "title": item["doc"].title, "path": item["doc"].path,
+        "kind": item["doc"].kind, "stale": item["doc"].stale,
+        "source_paths": _json_list(getattr(item["doc"], "source_paths_json", "[]")),
+    } for item in selected_sources]
+    try:
+        result = await asyncio.to_thread(ai.answer_repo_question, repo.full_name, question, history, selected_sources)
+    except Exception as error:
+        log.exception("Repository chat failed (%s)", type(error).__name__)
+        raise HTTPException(502, "Kodo could not answer this question. Check the backend logs and try again.")
+
+    db = SessionLocal()
+    try:
+        assistant_message = RepoChatMessage(
+            repository_id=repo_id, github_user_id=session["id"], role="assistant",
+            content=result["answer"], sources_json=json.dumps(source_refs),
+        )
+        db.add(assistant_message)
+        db.add(UsageRecord(
+            repository_id=repo_id, task="repo_chat", model=result["model"],
+            input_tokens=result["input_tokens"], output_tokens=result["output_tokens"],
+            estimated_cost_usd=result["cost"],
+        ))
+        db.commit()
+        db.refresh(assistant_message)
+        return {"user_message": user_message_json, "assistant_message": _chat_message_json(assistant_message)}
+    finally:
+        db.close()
+
+@app.delete("/api/repos/{repo_id}/chat")
+async def clear_repo_chat(repo_id: int, request: Request):
+    session = _session(request); db = SessionLocal()
+    try:
+        _authorized_repo(db, repo_id, session)
+        db.query(RepoChatMessage).filter(
+            RepoChatMessage.repository_id == repo_id,
+            RepoChatMessage.github_user_id == session["id"],
+        ).delete(synchronize_session=False)
+        db.commit()
+        return {"ok": True}
+    finally:
+        db.close()
 
 @app.post("/api/repos/{repo_id}/book/rebuild")
 async def rebuild_book(repo_id: int, request: Request, tasks: BackgroundTasks):
     session = _session(request); db = SessionLocal()
     try:
         _authorized_repo(db, repo_id, session)
-    finally: db.close()
-    db = SessionLocal()
-    try:
-        _queue_job(db, tasks, "repo_book", f"manual:{repo_id}:{secrets.token_urlsafe(8)}", {"repository_id": repo_id})
+        queued_jobs = db.scalars(select(BackgroundJob).where(
+            BackgroundJob.kind == "repo_book", BackgroundJob.state == "queued",
+        )).all()
+        for queued in queued_jobs:
+            try:
+                belongs_to_repo = json.loads(queued.payload).get("repository_id") == repo_id
+            except (TypeError, ValueError):
+                belongs_to_repo = False
+            if belongs_to_repo:
+                queued.state = "failed"
+                queued.last_error = "Superseded by a manual Handbook regeneration"
+                queued.updated_at = datetime.utcnow()
+        # Regeneration replaces generated Handbook material while retaining usage history.
+        db.query(BookDocument).filter(BookDocument.repository_id == repo_id).delete(synchronize_session=False)
+        db.query(RepoBookSection).filter(RepoBookSection.repository_id == repo_id).delete(synchronize_session=False)
+        db.query(RepoChatMessage).filter(
+            RepoChatMessage.repository_id == repo_id,
+            RepoChatMessage.github_user_id == session["id"],
+        ).delete(synchronize_session=False)
+        job = _queue_job(db, tasks, "repo_book", f"manual:{repo_id}:{secrets.token_urlsafe(8)}", {"repository_id": repo_id})
         db.commit()
+        return {"status": job.state, "job_id": job.id}
     finally:
         db.close()
-    return {"status": "queued"}
+
+@app.get("/api/repos/{repo_id}/book/rebuild/{job_id}")
+async def book_rebuild_status(repo_id: int, job_id: int, request: Request):
+    session = _session(request); db = SessionLocal()
+    try:
+        _authorized_repo(db, repo_id, session)
+        job = db.get(BackgroundJob, job_id)
+        if not job or job.kind != "repo_book" or json.loads(job.payload).get("repository_id") != repo_id:
+            raise HTTPException(404, "Handbook job not found")
+        payload = json.loads(job.payload or "{}")
+        return {"state": job.state, "attempts": job.attempts, "error": job.last_error if job.state == "failed" else "", "progress": payload.get("progress")}
+    finally:
+        db.close()
 
 @app.get("/api/usage")
 async def usage(request: Request):
@@ -259,6 +533,9 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                 if install_repos:
                     db.query(PullRequest).filter(PullRequest.repository_id.in_(install_repos)).delete(synchronize_session=False)
                     db.query(BookDocument).filter(BookDocument.repository_id.in_(install_repos)).delete(synchronize_session=False)
+                    db.query(RepoBookSection).filter(RepoBookSection.repository_id.in_(install_repos)).delete(synchronize_session=False)
+                    db.query(RepoChatMessage).filter(RepoChatMessage.repository_id.in_(install_repos)).delete(synchronize_session=False)
+                    db.query(AgentTask).filter(AgentTask.repository_id.in_(install_repos)).delete(synchronize_session=False)
                     db.query(UsageRecord).filter(UsageRecord.repository_id.in_(install_repos)).delete(synchronize_session=False)
                 db.query(Repository).filter(Repository.installation_id == install.get("id")).delete()
                 db.query(Installation).filter(Installation.id == install.get("id")).delete()
@@ -273,6 +550,9 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                 db.query(Repository).filter(Repository.id == r["id"]).delete()
                 db.query(PullRequest).filter(PullRequest.repository_id == r["id"]).delete()
                 db.query(BookDocument).filter(BookDocument.repository_id == r["id"]).delete()
+                db.query(RepoBookSection).filter(RepoBookSection.repository_id == r["id"]).delete()
+                db.query(RepoChatMessage).filter(RepoChatMessage.repository_id == r["id"]).delete()
+                db.query(AgentTask).filter(AgentTask.repository_id == r["id"]).delete()
                 db.query(UsageRecord).filter(UsageRecord.repository_id == r["id"]).delete()
         elif event == "pull_request":
             pr = payload.get("pull_request", {})
@@ -285,6 +565,7 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                 repo = db.get(Repository, payload.get("repository", {}).get("id"))
                 if repo and repo.enabled:
                     head_sha = (pr.get("head") or {}).get("sha", "unknown")
+                    action = payload.get("action", "unknown")
                     saved = db.scalar(select(PullRequest).where(PullRequest.repository_id == repo.id, PullRequest.number == pr["number"]))
                     if not saved:
                         saved = PullRequest(repository_id=repo.id, number=pr["number"])
@@ -296,12 +577,13 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                     saved.url = pr.get("html_url", "")
                     saved.status = "pending"
                     saved.updated_at = datetime.utcnow()
-                    _queue_job(db, tasks, "pull_request", f"{repo.id}:{pr['number']}:{head_sha}", {"repository_id": repo.id, "number": pr["number"], "event": payload})
+                    _queue_job(db, tasks, "pull_request", f"{repo.id}:{pr['number']}:{head_sha}:{action}", {"repository_id": repo.id, "number": pr["number"], "event": payload})
         elif event == "push":
             repo_data = payload.get("repository", {})
             repo = db.get(Repository, repo_data.get("id"))
             if repo:
                 db.query(BookDocument).filter(BookDocument.repository_id == repo.id).update({"stale": True})
+                db.query(RepoBookSection).filter(RepoBookSection.repository_id == repo.id).update({"stale": True})
                 if repo.enabled:
                     after = payload.get("after", "unknown")
                     _queue_job(db, tasks, "repo_book", f"push:{repo.id}:{after}", {"repository_id": repo.id})

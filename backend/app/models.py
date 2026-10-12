@@ -68,6 +68,50 @@ class BookDocument(Base):
     stale: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+class RepoBookSection(Base):
+    __tablename__ = "repo_book_sections"
+    __table_args__ = (UniqueConstraint("repository_id", "slug", name="uq_repo_book_section"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repository_id: Mapped[int] = mapped_column(Integer, index=True)
+    slug: Mapped[str] = mapped_column(String(80))
+    title: Mapped[str] = mapped_column(String(255))
+    category: Mapped[str] = mapped_column(String(80), default="Guide")
+    audiences_json: Mapped[str] = mapped_column(Text, default="[]")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    blocks_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_paths_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_hash: Mapped[str] = mapped_column(String(64), default="")
+    stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class RepoChatMessage(Base):
+    __tablename__ = "repo_chat_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repository_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    sources_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class AgentTask(Base):
+    __tablename__ = "agent_tasks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repository_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_login: Mapped[str] = mapped_column(String(255), default="")
+    title: Mapped[str] = mapped_column(String(200))
+    instructions: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    branch: Mapped[str] = mapped_column(String(255), default="")
+    commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pull_request_url: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class UsageRecord(Base):
     __tablename__ = "usage_records"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

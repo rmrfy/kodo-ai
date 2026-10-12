@@ -1,9 +1,0 @@
-.installation-note{font-size:9px;line-height:1.5;color:#657486;padding:10px 11px}
-.pr-title{display:flex;align-items:center;justify-content:space-between;color:#dbe3ec;text-decoration:none}
-.pr-title:hover{color:#a5edc5}
-.finding{display:flex;gap:8px;border-left:2px solid #52432a;padding:8px 9px;margin-top:9px;background:#1a1c1d;border-radius:0 4px 4px 0}
-.severity{font:8px 'DM Mono';text-transform:uppercase;letter-spacing:.4px;color:#edc679;min-width:39px;padding-top:2px}
-.severity.critical,.severity.high{color:#f09b8b}
-.finding>span:last-child{display:grid;gap:4px}
-.finding strong{font-size:10px;color:#d8dee5}
-.finding small{font-size:9px;line-height:1.45;color:#8c98a5}

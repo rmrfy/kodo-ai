@@ -1,16 +1,14 @@
 from logging.config import fileConfig
-import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 from app.db import Base
+from app.config import DATABASE_URL
 from app import models  # register all tables
 
 config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
-url = os.getenv("DATABASE_URL", "sqlite:///./kodo.db")
-if url.startswith("postgresql://"):
-    url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+url = DATABASE_URL
 config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 target_metadata = Base.metadata
 
