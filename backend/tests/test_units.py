@@ -1,13 +1,16 @@
 import unittest
 import json
+import io
 import subprocess
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 from app.ai import MODES, analyze, pr_prompt
-from app.coding_agents import CodingAgentConfigurationError, CodingAgentRequest, CodingAgentSandbox, get_coding_agent_provider
+from app.coding_agents import CodingAgentConfigurationError, CodingAgentRequest, CodingAgentSandbox, CodingAgentResult, get_coding_agent_provider
 from app.coding_agents.codex import CodexProvider
+from app.coding_tasks import _agent_result_with_change_state, _execute_coding_agent, _task_completion_summary
 from app.jobs import _added_line_numbers
 
 
@@ -63,31 +66,29 @@ class CodingAgentProviderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             workspace = Path(temp) / "workspace"
             workspace.mkdir()
-            output_event = {"type": "item.completed", "item": {"type": "agent_message", "text": "Implemented it."}}
+            output_events = [
+                {"type": "turn.started"},
+                {"type": "item.started", "item": {"type": "file_change"}},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "Implemented it."}},
+            ]
 
             def run_process(command, **kwargs):
-                kwargs["stdout"].write(json.dumps(output_event) + "\n")
-                process = MagicMock(returncode=0)
-                process.communicate.return_value = (None, None)
+                process = MagicMock(returncode=0, pid=82)
+                process.stdin = MagicMock()
+                process.stdin.write.side_effect = lambda text: setattr(self, "prompt", text)
+                process.stdout = io.StringIO("".join(json.dumps(event) + "\n" for event in output_events))
+                process.poll.return_value = 0
                 self.command = command
                 self.env = kwargs["env"]
-                # The timeout belongs to communicate, so retain the process for its assertion below.
                 self.process = process
                 return process
 
-            def communicate(prompt, timeout):
-                self.prompt = prompt
-                self.timeout = timeout
-                return None, None
-
-            def run_process_with_communicate(command, **kwargs):
-                process = run_process(command, **kwargs)
-                process.communicate.side_effect = communicate
-                return process
-
+            progress = []
+            request = self.request(workspace)
+            request = replace(request, on_progress=progress.append)
             with patch("app.coding_agents.codex.shutil.which", return_value="/usr/bin/codex"), \
-                 patch("app.coding_agents.codex.subprocess.Popen", side_effect=run_process_with_communicate):
-                result = CodexProvider(cli_path="codex-test", api_key="test-key").execute(self.request(workspace))
+                 patch("app.coding_agents.codex.subprocess.Popen", side_effect=run_process):
+                result = CodexProvider(cli_path="codex-test", api_key="test-key").execute(request)
 
             self.assertTrue(result.success)
             self.assertEqual(result.final_response, "Implemented it.")
@@ -98,7 +99,8 @@ class CodingAgentProviderTest(unittest.TestCase):
             self.assertIn("sandbox_workspace_write.network_access=false", self.command)
             self.assertEqual(self.env["CODEX_API_KEY"], "test-key")
             self.assertNotIn("KODO_GIT_TOKEN", self.env)
-            self.assertEqual(self.timeout, 37)
+            self.assertEqual(self.prompt.count("Implement the requested feature."), 1)
+            self.assertEqual([event.stage for event in progress], ["working", "editing"])
             self.assertIn("Continue on the session PR branch kodo/add-feature-1.", self.prompt)
 
     def test_codex_normalizes_no_change_outcome_without_claiming_workspace_state(self):
@@ -112,9 +114,10 @@ class CodingAgentProviderTest(unittest.TestCase):
             workspace.mkdir()
 
             def run_process(command, **kwargs):
-                kwargs["stdout"].write(json.dumps({"type": "turn.failed", "error": {"message": "agent failed"}}) + "\n")
                 process = MagicMock(returncode=1)
-                process.communicate.return_value = (None, None)
+                process.stdin = MagicMock()
+                process.stdout = io.StringIO(json.dumps({"type": "turn.failed", "error": {"message": "agent failed"}}) + "\n")
+                process.poll.return_value = 1
                 return process
 
             with patch("app.coding_agents.codex.shutil.which", return_value="/usr/bin/codex"), \
@@ -129,15 +132,43 @@ class CodingAgentProviderTest(unittest.TestCase):
             workspace = Path(temp) / "workspace"
             workspace.mkdir()
             process = MagicMock(pid=812, returncode=-15)
-            process.communicate.side_effect = subprocess.TimeoutExpired("codex", 37)
+            process.stdin = io.StringIO()
+            process.stdout = io.StringIO()
+            process.poll.return_value = None
             process.wait.side_effect = [subprocess.TimeoutExpired("codex", 10), None]
             with patch("app.coding_agents.codex.shutil.which", return_value="/usr/bin/codex"), \
                  patch("app.coding_agents.codex.subprocess.Popen", return_value=process), \
                  patch("app.coding_agents.codex.os.killpg") as killpg:
-                result = CodexProvider(cli_path="codex-test", api_key="test-key").execute(self.request(workspace))
+                result = CodexProvider(cli_path="codex-test", api_key="test-key").execute(self.request(workspace, timeout=0))
             self.assertFalse(result.success)
             self.assertIn("timed out", result.error)
             self.assertEqual(killpg.call_args_list, [call(812, 15), call(812, 9)])
+
+    def test_task_orchestration_normalizes_change_state_from_git_workspace(self):
+        result = CodingAgentResult(success=True, final_response="Done.")
+        with patch("app.coding_tasks._git", return_value=" M src/app.py"):
+            normalized = _agent_result_with_change_state(result, Path("/tmp/workspace"))
+        self.assertTrue(normalized.success)
+        self.assertTrue(normalized.changes_made)
+        self.assertEqual(normalized.final_response, "Done.")
+
+    def test_task_orchestration_executes_provider_through_shared_contract(self):
+        expected = CodingAgentResult(success=True, final_response="Implemented.")
+        provider = MagicMock(name="test-provider", execute=MagicMock(return_value=expected))
+        request = self.request(Path("/tmp/workspace"))
+        self.assertIs(_execute_coding_agent(provider, request), expected)
+        provider.execute.assert_called_once_with(request)
+
+    def test_task_orchestration_propagates_normalized_provider_failure(self):
+        provider = MagicMock(execute=MagicMock(return_value=CodingAgentResult(False, error="agent unavailable")))
+        with self.assertRaisesRegex(RuntimeError, "agent unavailable"):
+            _execute_coding_agent(provider, self.request(Path("/tmp/workspace")))
+
+    def test_task_summary_preserves_agent_report_and_limits_length(self):
+        summary = _task_completion_summary("Draft PR opened.", "Implemented the fix and ran focused checks.")
+        self.assertIn("Draft PR opened.", summary)
+        self.assertIn("ran focused checks", summary)
+        self.assertLessEqual(len(_task_completion_summary("Done.", "x" * 2000)), 1000)
 
 
 if __name__ == "__main__":

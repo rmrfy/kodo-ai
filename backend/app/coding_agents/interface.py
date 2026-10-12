@@ -1,7 +1,7 @@
 """Small shared contract between task orchestration and coding agents."""
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 
 @dataclass(frozen=True)
@@ -10,6 +10,14 @@ class CodingAgentSandbox:
 
     workspace_write: bool = True
     network_access: bool = False
+
+
+@dataclass(frozen=True)
+class CodingAgentProgress:
+    """Provider-neutral progress that is safe to report in application logs/UI."""
+
+    stage: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -26,6 +34,7 @@ class CodingAgentRequest:
     continue_existing_pr: bool
     timeout_seconds: int
     sandbox: CodingAgentSandbox = CodingAgentSandbox()
+    on_progress: Callable[[CodingAgentProgress], None] | None = None
 
 
 @dataclass(frozen=True)

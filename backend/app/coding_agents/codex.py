@@ -1,14 +1,20 @@
 """Codex CLI adapter, including Codex-specific auth, sandbox flags, and JSONL parsing."""
 import json
+import logging
 import os
+import queue
 import re
 import shutil
 import signal
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 
-from .interface import CodingAgentRequest, CodingAgentResult
+from .interface import CodingAgentProgress, CodingAgentRequest, CodingAgentResult
+
+log = logging.getLogger("kodo.coding_agents.codex")
 
 
 class CodexProvider:
@@ -42,16 +48,48 @@ class CodexProvider:
             "-c", "sandbox_workspace_write.network_access=false", "-",
         ]
         prompt = self._prompt(request)
+        process = None
+        reader = None
+        writer = None
         try:
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as output:
                 process = subprocess.Popen(
                     command, cwd=request.workspace, env=env, stdin=subprocess.PIPE,
-                    stdout=output, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                    bufsize=1, start_new_session=True,
                 )
+                progress_events = queue.Queue()
+                reader = threading.Thread(
+                    target=self._capture_output,
+                    args=(process.stdout, output, progress_events),
+                    daemon=True,
+                )
+                reader.start()
+                deadline = time.monotonic() + request.timeout_seconds
+                writer = threading.Thread(
+                    target=self._write_prompt,
+                    args=(process.stdin, prompt),
+                    daemon=True,
+                )
+                writer.start()
                 try:
-                    process.communicate(prompt, timeout=request.timeout_seconds)
+                    while process.poll() is None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, request.timeout_seconds)
+                        try:
+                            progress = progress_events.get(timeout=min(0.2, remaining))
+                        except queue.Empty:
+                            continue
+                        if progress is not None:
+                            self._report_progress(request, progress)
+                    reader.join()
+                    writer.join()
+                    self._drain_progress(request, progress_events)
                 except subprocess.TimeoutExpired:
                     self._terminate_process_group(process)
+                    reader.join(timeout=2)
+                    writer.join(timeout=2)
                     return CodingAgentResult(
                         False,
                         error="Codex task timed out. Increase KODO_CODING_TASK_TIMEOUT_SECONDS if appropriate",
@@ -71,11 +109,78 @@ class CodexProvider:
                     no_changes_needed=self._says_no_changes_needed(response),
                 )
         except OSError as error:
+            if process is not None and process.poll() is None:
+                self._terminate_process_group(process)
+            if reader is not None:
+                reader.join(timeout=2)
+            if writer is not None:
+                writer.join(timeout=2)
             return CodingAgentResult(False, error=f"Codex could not be started: {error}")
 
     @staticmethod
+    def _write_prompt(stream, prompt):
+        try:
+            stream.write(prompt)
+            stream.close()
+        except OSError:
+            # Codex may exit before consuming all stdin; its process result carries the failure.
+            pass
+
+    @staticmethod
+    def _capture_output(stream, output, progress_events):
+        try:
+            for line in stream:
+                output.write(line)
+                progress = CodexProvider._progress_from_jsonl(line)
+                if progress:
+                    progress_events.put(progress)
+        finally:
+            progress_events.put(None)
+
+    @staticmethod
+    def _progress_from_jsonl(line):
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        event_type = event.get("type")
+        item = event.get("item")
+        item_type = item.get("type") if isinstance(item, dict) else None
+        if event_type == "turn.started":
+            return CodingAgentProgress("working", "The agent started a work turn.")
+        if event_type == "item.started" and item_type == "command_execution":
+            return CodingAgentProgress("checking", "The agent is running a repository command.")
+        if event_type == "item.started" and item_type == "file_change":
+            return CodingAgentProgress("editing", "The agent is editing repository files.")
+        if event_type == "item.started" and item_type == "mcp_tool_call":
+            return CodingAgentProgress("using_tool", "The agent is using a configured tool.")
+        return None
+
+    @staticmethod
+    def _report_progress(request, progress):
+        if request.on_progress:
+            try:
+                request.on_progress(progress)
+            except Exception:
+                log.warning("Coding agent progress callback failed", exc_info=True)
+
+    @classmethod
+    def _drain_progress(cls, request, events):
+        while True:
+            try:
+                progress = events.get_nowait()
+            except queue.Empty:
+                return
+            if progress is None:
+                return
+            cls._report_progress(request, progress)
+
+    @staticmethod
     def _terminate_process_group(process):
-        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:

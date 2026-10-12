@@ -5,6 +5,7 @@ import logging
 import requests
 import subprocess
 import tempfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -91,6 +92,24 @@ def _git(directory: Path, *args: str, env=None, timeout=120):
     if result.returncode:
         raise RuntimeError("Git operation failed. Check repository access and branch permissions.")
     return result.stdout.strip()
+
+
+def _agent_result_with_change_state(agent_result, workspace: Path):
+    """Let orchestration use Git's workspace state as the reliable change signal."""
+    return replace(agent_result, changes_made=bool(_git(workspace, "status", "--porcelain")))
+
+
+def _execute_coding_agent(provider, request):
+    """Execute any configured provider and enforce Kodo's normalized result contract."""
+    result = provider.execute(request)
+    if not result.success:
+        raise RuntimeError(result.error or "Coding agent failed without providing an error")
+    return result
+
+
+def _task_completion_summary(outcome: str, agent_response: str) -> str:
+    details = agent_response.strip()
+    return f"{outcome}\n\n{details}"[:1000] if details else outcome[:1000]
 
 
 def _git_auth_env(token: str, askpass: Path):
@@ -235,17 +254,20 @@ def process_coding_task(task_id: int) -> bool:
                 continue_existing_pr=bool(target_pr),
                 timeout_seconds=config.CODING_TASK_TIMEOUT_SECONDS,
                 sandbox=CodingAgentSandbox(workspace_write=True, network_access=False),
+                on_progress=lambda progress: log.info(
+                    "Coding agent progress: task_id=%s provider=%s stage=%s message=%s",
+                    task_id, provider.name, progress.stage, progress.message,
+                ),
             )
             log.info("Coding agent started: task_id=%s provider=%s repo=%s timeout_seconds=%s", task_id, provider.name, task_data["full_name"], agent_request.timeout_seconds)
-            agent_result = provider.execute(agent_request)
-            if not agent_result.success:
-                raise RuntimeError(agent_result.error or "Coding agent failed without providing an error")
+            agent_result = _execute_coding_agent(provider, agent_request)
             agent_message = agent_result.final_response
             log.info("Coding agent finished: task_id=%s provider=%s response_chars=%s", task_id, provider.name, len(agent_message))
 
             if _git(workspace, "branch", "--show-current") != branch:
                 raise RuntimeError("The coding agent switched away from the task branch; no changes were pushed")
-            if not _git(workspace, "status", "--porcelain"):
+            agent_result = _agent_result_with_change_state(agent_result, workspace)
+            if not agent_result.changes_made:
                 if agent_result.no_changes_needed:
                     log.info("Coding task completed without edits: task_id=%s reason=already_implemented", task_id)
                     _save_task(
@@ -277,7 +299,10 @@ def process_coding_task(task_id: int) -> bool:
             _save_destination(task_data["destination_id"], branch=branch, status="open", pull_request_number=target_pr["number"], pull_request_url=target_pr["html_url"], error="")
             _save_task(
                 task_id, state="complete", commit_sha=commit_sha,
-                summary=f"Changes pushed to the source branch of pull request #{target_pr['number']}.", error="",
+                summary=_task_completion_summary(
+                    f"Changes pushed to the source branch of pull request #{target_pr['number']}.",
+                    agent_message,
+                ), error="",
             )
             log.info("Coding task updated existing PR: task_id=%s pr=%s url=%s", task_id, target_pr["number"], target_pr["html_url"])
             return True
@@ -291,7 +316,10 @@ def process_coding_task(task_id: int) -> bool:
         })
         _save_task(
             task_id, state="complete", commit_sha=commit_sha,
-            summary="Changes pushed to a new branch and opened as a draft pull request.", error="",
+            summary=_task_completion_summary(
+                "Changes pushed to a new branch and opened as a draft pull request.",
+                agent_message,
+            ), error="",
         )
         _save_destination(task_data["destination_id"], branch=branch, status="open", pull_request_number=pr["number"], pull_request_url=pr["html_url"], error="")
         log.info("Coding task draft PR opened: task_id=%s repo=%s pr=%s url=%s", task_id, task_data["full_name"], pr["number"], pr["html_url"])

@@ -1,13 +1,14 @@
 """Select the configured coding-agent implementation."""
 from .. import config
 from .codex import CodexProvider
+from .interface import CodingAgentProvider
 
 
 class CodingAgentConfigurationError(ValueError):
     pass
 
 
-def get_coding_agent_provider(name: str | None = None):
+def get_coding_agent_provider(name: str | None = None) -> CodingAgentProvider:
     provider_name = (name if name is not None else config.CODING_AGENT_PROVIDER).strip().lower()
     if provider_name == "codex":
         return CodexProvider()
