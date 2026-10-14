@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 
+MAX_CODING_AGENT_RESPONSE_CHARS = 20_000
+
+
 @dataclass(frozen=True)
 class CodingAgentSandbox:
     """Minimum execution restrictions required by kodai's task runner."""
@@ -26,7 +29,6 @@ class CodingAgentRequest:
 
     workspace: Path
     repository: str
-    task_title: str
     instructions: str
     project_context: str
     previous_work: str
@@ -45,7 +47,7 @@ class CodingAgentResult:
     final_response: str = ""
     error: str = ""
     changes_made: bool | None = None
-    no_changes_needed: bool = False
+    blocked: bool = False
 
 
 class CodingAgentProvider(Protocol):

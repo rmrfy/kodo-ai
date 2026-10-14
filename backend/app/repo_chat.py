@@ -64,10 +64,10 @@ def conversation_prompt(repository: str, question: str, history: list[dict], sou
     prior_turns = "\n".join(f"{turn['role'].upper()}: {turn['content'][:2000]}" for turn in history[-10:])
     return f"""Repository: {repository}
 
-Maintainer-provided workspace and repository context:
+Maintainer-provided organization and repository context:
 {maintainer_context or '(No additional maintainer context provided.)'}
 
-When workspace and repository context conflict, follow repository context. Treat this context as product and operational background; the Handbook remains the source for claims about code behavior.
+When organization and repository context conflict, follow repository context. Treat this context as product and operational background; the Handbook remains the source for claims about code behavior.
 
 Use maintainer context for product and operational background, and use the Handbook excerpts below for claims about repository implementation. These excerpts are generated notes, not a complete checkout of the source code. If they do not support an implementation answer, say what is missing and suggest which area or file to inspect. Never invent implementation details. Mark stale notes as potentially out of date. For implementation claims, cite the exact source title/path in square brackets, using the source label supplied below.
 

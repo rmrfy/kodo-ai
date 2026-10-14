@@ -40,7 +40,7 @@ class ReviewHelpersTest(unittest.TestCase):
 class CodingAgentProviderTest(unittest.TestCase):
     def request(self, workspace, timeout=37):
         return CodingAgentRequest(
-            workspace=workspace, repository="acme/project", task_title="Add a feature",
+            workspace=workspace, repository="acme/project",
             instructions="Implement the requested feature.", project_context="Project context",
             previous_work="Earlier task summary", branch="kodo/add-feature-1",
             continue_existing_pr=True, timeout_seconds=timeout,
@@ -93,7 +93,7 @@ class CodingAgentProviderTest(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(result.final_response, "Implemented it.")
             self.assertIsNone(result.changes_made)
-            self.assertFalse(result.no_changes_needed)
+            self.assertFalse(result.blocked)
             self.assertIn("--sandbox", self.command)
             self.assertIn("workspace-write", self.command)
             self.assertIn("sandbox_workspace_write.network_access=false", self.command)
@@ -103,10 +103,9 @@ class CodingAgentProviderTest(unittest.TestCase):
             self.assertEqual([event.stage for event in progress], ["working", "editing"])
             self.assertIn("Continue on the session PR branch kodo/add-feature-1.", self.prompt)
 
-    def test_codex_normalizes_no_change_outcome_without_claiming_workspace_state(self):
-        message = "The requested code already exists.\nKODO_TASK_OUTCOME: NO_CHANGES_NEEDED"
-        self.assertTrue(CodexProvider._says_no_changes_needed(message))
-        self.assertFalse(CodexProvider._says_no_changes_needed("Implemented the feature."))
+    def test_codex_normalizes_blocked_outcome_separately_from_response(self):
+        self.assertTrue(CodexProvider._says_blocked("Could not complete.\nKODO_TASK_OUTCOME: BLOCKED"))
+        self.assertFalse(CodexProvider._says_blocked("Answered the question.\nKODO_TASK_OUTCOME: COMPLETED"))
 
     def test_codex_failure_extracts_jsonl_error(self):
         with tempfile.TemporaryDirectory() as temp:
