@@ -7,7 +7,7 @@ import DashboardContent from './components/DashboardContent.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SessionWorkspace from './components/SessionWorkspace.vue'
 import LandingPage from './components/LandingPage.vue'
-import { buildAppRoute, resolveAppRoute } from './router'
+import { buildAppRoute, resolveAppRoute, safeAppDestination } from './router'
 
 const initialRoute = resolveAppRoute()
 const API_BASE = import.meta.env.VITE_API_URL || ''
@@ -18,7 +18,7 @@ const api = async (path, options = {}) => {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   })
   if (response.status === 401) {
-    clearAuthState()
+    handleUnauthorized()
     throw new Error('Sign in to continue.')
   }
   if (!response.ok) {
@@ -50,7 +50,8 @@ const organizationCreating = ref(false)
 const authEmail = ref('')
 const authPassword = ref('')
 const authName = ref('')
-const authMode = ref('signin')
+const authMode = ref(initialRoute.page === 'signup' ? 'signup' : 'signin')
+const authNext = ref(initialRoute.next || '')
 const authSubmitting = ref(false)
 const installations = ref([])
 const availableInstallations = ref([])
@@ -140,6 +141,22 @@ function clearAuthState() {
   selected.value = null
 }
 
+function requestedAppDestination() {
+  return safeAppDestination(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+}
+
+function redirectToLogin(destination) {
+  authMode.value = 'signin'
+  authNext.value = safeAppDestination(destination)
+  page.value = 'login'
+  window.history.replaceState({}, '', buildAppRoute({ page: 'login', next: authNext.value }))
+}
+
+function handleUnauthorized() {
+  clearAuthState()
+  if (routeFromLocation().requiresAuth) redirectToLogin(requestedAppDestination())
+}
+
 function routeFromLocation() {
   return resolveAppRoute()
 }
@@ -152,12 +169,22 @@ function currentRouteUrl() {
     sessionId: sessionWorkspaceId.value,
     chapter: handbookSlug.value,
     filter: pullFilter.value,
+    next: authNext.value,
   })
 }
 
 async function restoreRouteFromLocation() {
   restoringRoute = true
   const route = routeFromLocation()
+  if (['landing', 'login', 'signup', 'not-found'].includes(route.page)) {
+    page.value = route.page
+    authMode.value = route.page === 'signup' ? 'signup' : 'signin'
+    authNext.value = route.next || ''
+    await nextTick()
+    restoringRoute = false
+    return
+  }
+  authNext.value = ''
   if (sessionWorkspaceId.value !== (route.page === 'session' ? route.sessionId : null)) sessionChanges.value = null
   selected.value = repos.value.some(repo => repo.id === route.repoId) ? route.repoId : repos.value[0]?.id || null
   syncSelectedRepoAccess()
@@ -186,11 +213,32 @@ function syncSelectedRepoAccess() {
 }
 
 function handlePopState() {
+  let route = routeFromLocation()
   if (!signedIn.value) {
     restoringRoute = true
-    const route = routeFromLocation()
-    page.value = route.page === 'landing' ? 'landing' : 'login'
-    if (route.page !== 'landing' && route.page !== 'login') window.history.replaceState({}, '', '/login')
+    if (route.page === 'landing') {
+      page.value = 'landing'
+      authNext.value = ''
+    } else if (route.page === 'login' || route.page === 'signup') {
+      page.value = route.page
+      authMode.value = route.page === 'signup' ? 'signup' : 'signin'
+      authNext.value = route.next || ''
+    } else if (route.requiresAuth) {
+      redirectToLogin(requestedAppDestination())
+    } else {
+      page.value = 'not-found'
+      authNext.value = ''
+    }
+    void nextTick(() => { restoringRoute = false })
+    return
+  }
+  if (route.page === 'login' || route.page === 'signup') {
+    window.history.replaceState({}, '', route.next || '/app')
+    route = routeFromLocation()
+  }
+  if (route.page === 'landing' || route.page === 'not-found') {
+    restoringRoute = true
+    page.value = route.page
     void nextTick(() => { restoringRoute = false })
     return
   }
@@ -202,8 +250,11 @@ function handlePopState() {
 }
 
 watch([selected, page, tab, sessionWorkspaceId, handbookSlug, pullFilter], () => {
-  if (restoringRoute || loading.value) return
-  window.history.pushState({}, '', currentRouteUrl())
+  if (restoringRoute || loading.value || page.value === 'not-found') return
+  const routeUrl = currentRouteUrl()
+  if (routeUrl !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+    window.history.pushState({}, '', routeUrl)
+  }
 }, { flush: 'post' })
 
 watch([selected, page, tab, sessionWorkspaceId], () => {
@@ -231,13 +282,11 @@ async function init() {
     activeOrganizationId.value = me.organization_id || ''
     organizations.value = await api('/organizations')
     repos.value = await api('/repos')
-    await restoreRouteFromLocation()
-    if (page.value === 'landing' || page.value === 'login') {
-      page.value = 'dashboard'
-      tab.value = knowledgeOnly.value ? 'book' : 'pulls'
-      sessionWorkspaceId.value = null
-      window.history.replaceState({}, '', currentRouteUrl())
+    const authRoute = routeFromLocation()
+    if (authRoute.page === 'login' || authRoute.page === 'signup') {
+      window.history.replaceState({}, '', authRoute.next || '/app')
     }
+    await restoreRouteFromLocation()
     syncSelectedRepoAccess()
     if (knowledgeOnly.value && page.value === 'session') {
       page.value = 'dashboard'
@@ -247,9 +296,17 @@ async function init() {
     await loadCurrentRouteData()
   } catch (err) {
     if (signedIn.value) error.value = err.message
-    else if (page.value !== 'landing') {
-      page.value = 'login'
-      window.history.replaceState({}, '', '/login')
+    else {
+      const route = routeFromLocation()
+      if (route.page === 'login' || route.page === 'signup') {
+        page.value = route.page
+        authMode.value = route.page === 'signup' ? 'signup' : 'signin'
+        authNext.value = route.next || ''
+      } else if (route.requiresAuth) {
+        redirectToLogin(requestedAppDestination())
+      } else {
+        page.value = route.page
+      }
     }
   } finally {
     loading.value = false
@@ -352,6 +409,17 @@ async function signInWithEmail() {
     await init()
   } catch (err) { error.value = err.message }
   finally { authSubmitting.value = false }
+}
+
+function switchAuthMode(mode) {
+  authMode.value = mode
+  page.value = mode === 'signup' ? 'signup' : 'login'
+  error.value = ''
+}
+
+function githubAuthUrl() {
+  const next = safeAppDestination(authNext.value)
+  return `${API_BASE}/api/auth/github${next ? `?next=${encodeURIComponent(next)}` : ''}`
 }
 
 async function inviteMember({ email, role, audience, repositoryScope, repositoryIds, onSuccess }) {
@@ -643,7 +711,7 @@ async function loadUsage(silent = false) {
 async function loadCurrentRouteData() {
   updatePullPolling()
   updateSessionPolling()
-  if (!signedIn.value) return
+  if (!signedIn.value || ['landing', 'login', 'signup', 'not-found'].includes(page.value)) return
   if (page.value === 'settings') {
     await loadSettingsData()
     return
@@ -874,7 +942,8 @@ async function clearRepoChat() {
 
 async function installLink() {
   if (!githubConnected.value) {
-    window.location.href = `${API_BASE}/api/auth/github`
+    const next = requestedAppDestination() || '/app'
+    window.location.href = `${API_BASE}/api/auth/github?next=${encodeURIComponent(next)}`
     return
   }
   const installTab = window.open('about:blank', '_blank')
@@ -907,6 +976,10 @@ onMounted(async () => {
     loading.value = false
     return
   }
+  if (initialRoute.page === 'not-found' && !initialRoute.requiresAuth) {
+    loading.value = false
+    return
+  }
   await init()
 })
 onUnmounted(() => {
@@ -918,22 +991,22 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <LandingPage v-if="!loading && !signedIn && page === 'landing'" :api-base="API_BASE" />
+  <LandingPage v-if="!loading && page === 'landing'" :api-base="API_BASE" />
 
-  <main v-else-if="!loading && !signedIn && page === 'login'" class="auth-page">
+  <main v-else-if="!loading && !signedIn && ['login', 'signup'].includes(page)" class="auth-page">
     <a class="auth-brand" href="/" aria-label="kodai home"><span class="welcome-mark">k</span><span>kodai</span></a>
     <div v-if="error" class="alert" role="alert"><span class="alert-icon">!</span><p>{{ error }}</p></div>
     <section class="welcome-card">
       <div class="welcome-copy">
         <span class="eyebrow">YOUR CODE, UNDERSTOOD</span>
-        <h1>Welcome to kodai</h1>
-        <p>Sign in with GitHub or use an email and password account. You can connect GitHub later when you need developer tools.</p>
-        <a class="button button-primary" :href="`${API_BASE}/api/auth/github`"><GitBranch :size="15" aria-hidden="true" />Continue with GitHub <ArrowUpRight :size="14" aria-hidden="true" /></a>
+        <h1>{{ authMode === 'signup' ? 'Create your kodai account' : 'Welcome to kodai' }}</h1>
+        <p>{{ authMode === 'signup' ? 'Create an account with GitHub or with your email and a password.' : 'Sign in with GitHub or use an email and password account. You can connect GitHub later when you need developer tools.' }}</p>
+        <a class="button button-primary" :href="githubAuthUrl()"><GitBranch :size="15" aria-hidden="true" />Continue with GitHub <ArrowUpRight :size="14" aria-hidden="true" /></a>
         <div class="email-login-form">
           <span class="email-login-divider">or use email</span>
           <div class="email-auth-mode" role="group" aria-label="Email account action">
-            <button type="button" :class="{ active: authMode === 'signin' }" @click="authMode = 'signin'">Sign in</button>
-            <button type="button" :class="{ active: authMode === 'signup' }" @click="authMode = 'signup'">Create account</button>
+            <button type="button" :class="{ active: authMode === 'signin' }" @click="switchAuthMode('signin')">Sign in</button>
+            <button type="button" :class="{ active: authMode === 'signup' }" @click="switchAuthMode('signup')">Create account</button>
           </div>
           <form @submit.prevent="signInWithEmail">
             <input v-if="authMode === 'signup'" v-model="authName" type="text" autocomplete="name" placeholder="Your name (optional)" aria-label="Your name" maxlength="255" />
@@ -946,6 +1019,11 @@ onUnmounted(() => {
       </div>
     </section>
     <a class="auth-back-link" href="/">Back to kodai</a>
+  </main>
+
+  <main v-else-if="!loading && page === 'not-found'" class="auth-page">
+    <a class="auth-brand" href="/" aria-label="kodai home"><span class="welcome-mark">k</span><span>kodai</span></a>
+    <section class="welcome-card"><div class="welcome-copy"><h1>Page not found</h1><p>This page may have moved or the address may be incorrect.</p><a class="button button-primary" href="/">Back to kodai</a></div></section>
   </main>
 
   <div v-else-if="loading && !signedIn" class="public-loading" aria-live="polite"><span class="spinner"></span></div>

@@ -1,83 +1,115 @@
 const pullFilters = new Set(['all', 'open', 'complete', 'findings', 'processing', 'failed'])
-const dashboardTabs = new Set(['pulls', 'book', 'chat', 'tasks', 'usage'])
 
-function legacyRoute(params) {
-  const requestedPage = params.get('view')
-  const requestedTab = params.get('tab')
+export function safeAppDestination(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return ''
+  try {
+    const url = new URL(value, 'https://kodai.invalid')
+    if (url.origin !== 'https://kodai.invalid' || !(url.pathname === '/app' || url.pathname.startsWith('/app/'))) return ''
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    return ''
+  }
+}
+
+function routeDefaults(overrides = {}) {
   return {
-    repoId: Number(params.get('repo')) || null,
-    page: ['settings', 'session'].includes(requestedPage) ? requestedPage : 'dashboard',
-    tab: dashboardTabs.has(requestedTab) ? requestedTab : 'pulls',
-    sessionId: Number(params.get('session')) || null,
-    chapter: params.get('chapter') || '',
-    filter: pullFilters.has(params.get('filter')) ? params.get('filter') : 'all',
+    repoId: null,
+    page: 'not-found',
+    tab: 'pulls',
+    sessionId: null,
+    chapter: '',
+    filter: 'all',
+    next: '',
+    requiresAuth: false,
+    ...overrides,
   }
 }
 
 export function resolveAppRoute(href = window.location.href) {
   const url = new URL(href)
-  const params = url.searchParams
-  const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
-
-  if (parts.length === 0 && ['view', 'repo', 'tab', 'session', 'chapter', 'filter'].some(key => params.has(key))) {
-    return legacyRoute(params)
-  }
-  if (parts.length === 0) {
-    return { repoId: Number(params.get('repo')) || null, page: 'landing', tab: 'pulls', sessionId: null, chapter: '', filter: 'all' }
-  }
-  if (parts[0] === 'login') {
-    return { repoId: null, page: 'login', tab: 'pulls', sessionId: null, chapter: '', filter: 'all' }
-  }
-  if (parts[0] === 'app') {
-    return { repoId: Number(params.get('repo')) || null, page: 'dashboard', tab: 'pulls', sessionId: null, chapter: '', filter: 'all' }
-  }
-  if (parts[0] === 'settings') {
-    return { repoId: Number(params.get('repo')) || null, page: 'settings', tab: 'pulls', sessionId: null, chapter: '', filter: 'all' }
-  }
-  if (parts[0] === 'repos' && parts[1]) {
-    const route = {
-      repoId: Number(parts[1]) || null,
-      page: 'dashboard',
-      tab: 'pulls',
-      sessionId: null,
-      chapter: '',
-      filter: pullFilters.has(params.get('filter')) ? params.get('filter') : 'all',
-    }
-    if (parts[2] === 'sessions') {
-      if (parts[3] === 'new') route.page = 'session'
-      else if (parts[3]) {
-        route.page = 'session'
-        route.sessionId = Number(parts[3]) || null
-      } else route.tab = 'tasks'
-    } else if (parts[2] === 'handbook') {
-      route.tab = 'book'
-      route.chapter = parts[3] || ''
-    } else if (['pulls', 'chat', 'usage'].includes(parts[2])) {
-      route.tab = { pulls: 'pulls', chat: 'chat', usage: 'usage' }[parts[2]]
-    }
-    return route
+  let parts
+  try {
+    parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+  } catch {
+    return routeDefaults({ requiresAuth: url.pathname === '/app' || url.pathname.startsWith('/app/') })
   }
 
-  // Accept the earlier query-string routes and canonicalize them to path routes.
-  return legacyRoute(params)
+  if (parts.length === 0) return routeDefaults({ page: 'landing' })
+
+  if (parts.length === 1 && parts[0] === 'login') {
+    return routeDefaults({ page: 'login', next: safeAppDestination(url.searchParams.get('next')) })
+  }
+  if (parts.length === 1 && parts[0] === 'signup') {
+    return routeDefaults({ page: 'signup', next: safeAppDestination(url.searchParams.get('next')) })
+  }
+
+  if (parts[0] !== 'app') return routeDefaults()
+  if (parts.length === 1) return routeDefaults({ page: 'dashboard', requiresAuth: true })
+
+  if (parts.length === 2 && parts[1] === 'settings') {
+    return routeDefaults({ page: 'settings', requiresAuth: true })
+  }
+
+  if (parts[1] !== 'repos' || !parts[2] || !/^\d+$/.test(parts[2])) {
+    return routeDefaults({ requiresAuth: true })
+  }
+
+  const repoId = Number(parts[2]) || null
+  const section = parts[3]
+  const rest = parts.slice(4)
+  const filter = pullFilters.has(url.searchParams.get('filter')) ? url.searchParams.get('filter') : 'all'
+
+  if (!section) return routeDefaults({ repoId, page: 'dashboard', requiresAuth: true })
+  if (section === 'pulls' && rest.length === 0) {
+    return routeDefaults({ repoId, page: 'dashboard', tab: 'pulls', filter, requiresAuth: true })
+  }
+  if (section === 'sessions') {
+    if (rest.length === 0) return routeDefaults({ repoId, page: 'dashboard', tab: 'tasks', requiresAuth: true })
+    if (rest.length === 1 && rest[0] === 'new') return routeDefaults({ repoId, page: 'session', requiresAuth: true })
+    if (rest.length === 1 && /^\d+$/.test(rest[0])) {
+      return routeDefaults({ repoId, page: 'session', sessionId: Number(rest[0]) || null, requiresAuth: true })
+    }
+  }
+  if (section === 'handbook' && rest.length <= 1) {
+    return routeDefaults({ repoId, page: 'dashboard', tab: 'book', chapter: rest[0] || '', requiresAuth: true })
+  }
+  if (section === 'chat' && rest.length === 0) {
+    return routeDefaults({ repoId, page: 'dashboard', tab: 'chat', requiresAuth: true })
+  }
+  if (section === 'usage' && rest.length === 0) {
+    return routeDefaults({ repoId, page: 'dashboard', tab: 'usage', requiresAuth: true })
+  }
+
+  return routeDefaults({ requiresAuth: true })
 }
 
 export function buildAppRoute(state, href = window.location.href) {
   const url = new URL(href)
   url.search = ''
-  let path = '/'
-  if (state.page === 'login') path = '/login'
-  else if (state.page === 'landing') path = '/'
-  else if (state.page === 'settings') path = '/settings'
-  else if (state.repoId && state.page === 'session') {
+  let path = '/app'
+
+  if (state.page === 'login' || state.page === 'signup') {
+    path = state.page === 'signup' ? '/signup' : '/login'
+    const next = safeAppDestination(state.next)
+    if (next) url.searchParams.set('next', next)
+    return path + url.search + url.hash
+  }
+  if (state.page === 'landing') return '/'
+  if (state.page === 'not-found') return `${url.pathname}${url.search}${url.hash}`
+  if (state.page === 'settings') return '/app/settings'
+
+  if (state.repoId && state.page === 'session') {
     path = state.sessionId
-      ? '/repos/' + state.repoId + '/sessions/' + state.sessionId
-      : '/repos/' + state.repoId + '/sessions/new'
+      ? `/app/repos/${state.repoId}/sessions/${state.sessionId}`
+      : `/app/repos/${state.repoId}/sessions/new`
   } else if (state.repoId) {
     const segment = { pulls: 'pulls', tasks: 'sessions', book: 'handbook', chat: 'chat', usage: 'usage' }[state.tab] || 'pulls'
-    path = '/repos/' + state.repoId + '/' + segment
-    if (state.tab === 'book' && state.chapter) path += '/' + encodeURIComponent(state.chapter)
+    path = `/app/repos/${state.repoId}/${segment}`
+    if (state.tab === 'book' && state.chapter) path += `/${encodeURIComponent(state.chapter)}`
     if (state.tab === 'pulls' && state.filter !== 'all') url.searchParams.set('filter', state.filter)
-  } else if (state.page === 'dashboard') path = '/app'
+  } else if (state.page === 'dashboard') {
+    path = '/app'
+  }
+
   return path + url.search + url.hash
 }

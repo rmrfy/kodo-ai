@@ -13,11 +13,11 @@ import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import UUID
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from itsdangerous import URLSafeTimedSerializer, BadSignature
@@ -35,6 +35,16 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kodo")
 app = FastAPI(title="kodai", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=[config.FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["Content-Type"])
+
+
+@app.middleware("http")
+async def prelaunch_route_gate(request: Request, call_next):
+    """Keep the public API closed during prelaunch except for waitlist signup."""
+    if request.method == "OPTIONS" or (request.method == "POST" and request.url.path == "/api/waitlist"):
+        return await call_next(request)
+    return JSONResponse(status_code=404, content={"detail": "kodai is not open yet"})
+
+
 SESSION_SECRET = os.getenv("KODO_SESSION_SECRET", "local-only-change-this-secret")
 if os.getenv("ENVIRONMENT", "development").lower() == "production" and SESSION_SECRET == "local-only-change-this-secret":
     raise RuntimeError("KODO_SESSION_SECRET must be set in production")
@@ -43,6 +53,21 @@ serializer = URLSafeTimedSerializer(SESSION_SECRET)
 def _cookie_secure() -> bool:
     configured = os.getenv("KODO_COOKIE_SECURE")
     return configured.lower() == "true" if configured is not None else os.getenv("ENVIRONMENT", "development").lower() == "production"
+
+def _safe_app_return_path(value: str | None) -> str | None:
+    if not value or len(value) > 2048 or "\\" in value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        decoded_path = unquote(parsed.path)
+    except ValueError:
+        return None
+    segments = decoded_path.split("/")
+    if parsed.scheme or parsed.netloc or not (decoded_path == "/app" or decoded_path.startswith("/app/")):
+        return None
+    if any(segment in {".", ".."} for segment in segments):
+        return None
+    return urlunsplit(("", "", parsed.path, parsed.query, parsed.fragment))
 
 def _hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
@@ -417,6 +442,8 @@ async def auth_start(request: Request):
         f"&state={quote(state, safe='')}&scope={quote('read:user user:email offline_access', safe='')}"
     )
     response = RedirectResponse(authorize_url, status_code=302)
+    next_path = _safe_app_return_path(request.query_params.get("next")) or "/app"
+    response.set_cookie("kodo_oauth_next", next_path, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=600, path="/")
     # The callback may be registered at /auth/callback, outside the default
     # /api/auth cookie path inferred from this start URL.
     response.set_cookie("kodo_oauth_state", state, httponly=True, secure=_cookie_secure(), samesite="lax", max_age=600, path="/")
@@ -575,8 +602,10 @@ async def auth_callback(code: str, state: str, request: Request):
         session_id = target_session.id
     finally:
         db.close()
-    result = RedirectResponse(f"{config.FRONTEND_ORIGIN.rstrip('/')}/app", status_code=302)
+    next_path = _safe_app_return_path(request.cookies.get("kodo_oauth_next")) or "/app"
+    result = RedirectResponse(f"{config.FRONTEND_ORIGIN.rstrip('/')}{next_path}", status_code=302)
     result.delete_cookie("kodo_oauth_state", path="/")
+    result.delete_cookie("kodo_oauth_next", path="/")
     result.set_cookie("kodo_session", serializer.dumps(session_id), httponly=True, secure=_cookie_secure(), samesite="lax", max_age=604800)
     return result
 
