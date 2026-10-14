@@ -1,5 +1,6 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from uuid import uuid4
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -9,6 +10,7 @@ class Installation(Base):
     account: Mapped[str] = mapped_column(String(255), default="")
     account_type: Mapped[str] = mapped_column(String(32), default="User")
     suspended: Mapped[bool] = mapped_column(Boolean, default=False)
+    organization_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Repository(Base):
@@ -19,6 +21,7 @@ class Repository(Base):
     private: Mapped[bool] = mapped_column(Boolean, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     review_mode: Mapped[str] = mapped_column(String(32), default="standard")
+    organization_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
 
 class ContextFile(Base):
     """Maintainer-authored Markdown guidance for an installation or repository."""
@@ -98,44 +101,50 @@ class RepoChatMessage(Base):
     __tablename__ = "repo_chat_messages"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     repository_id: Mapped[int] = mapped_column(Integer, index=True)
-    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_user_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     sources_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
 class AgentTask(Base):
     __tablename__ = "agent_tasks"
     __table_args__ = (UniqueConstraint("repository_id", "source_pull_request_number", "source_finding_key", name="uq_agent_task_source_finding"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     repository_id: Mapped[int] = mapped_column(Integer, index=True)
-    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_user_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     github_login: Mapped[str] = mapped_column(String(255), default="")
-    title: Mapped[str] = mapped_column(String(200))
     instructions: Mapped[str] = mapped_column(Text)
     source_pull_request_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_finding_key: Mapped[str] = mapped_column(String(64), default="")
     work_session_id: Mapped[int] = mapped_column(ForeignKey("work_sessions.id", ondelete="CASCADE"), index=True)
     work_session_pull_request_id: Mapped[int] = mapped_column(ForeignKey("work_session_pull_requests.id", ondelete="CASCADE"), index=True)
     state: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    progress_stage: Mapped[str] = mapped_column(String(32), default="")
+    progress_message: Mapped[str] = mapped_column(Text, default="")
     commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    changes_json: Mapped[str] = mapped_column(Text, default="{}")
     summary: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
 class WorkSession(Base):
     __tablename__ = "work_sessions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     repository_id: Mapped[int] = mapped_column(Integer, index=True)
-    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    github_user_id: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(200), default="")
     status: Mapped[str] = mapped_column(String(24), default="active", index=True)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
 class WorkSessionPullRequest(Base):
+    """A session branch generation, optionally linked to its published pull request."""
     __tablename__ = "work_session_pull_requests"
     __table_args__ = (
         UniqueConstraint("work_session_id", "sequence", name="uq_session_pr_sequence"),
@@ -164,13 +173,93 @@ class UsageRecord(Base):
     estimated_cost_usd: Mapped[float] = mapped_column(default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+
+class WaitlistSignup(Base):
+    """Email addresses submitted to hear when kodai launches."""
+    __tablename__ = "waitlist_signups"
+    __table_args__ = (UniqueConstraint("email", name="uq_waitlist_signup_email"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 class UserSession(Base):
     __tablename__ = "user_sessions"
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    github_user_id: Mapped[int] = mapped_column(Integer, index=True)
-    login: Mapped[str] = mapped_column(String(255))
-    access_token: Mapped[str] = mapped_column(String(4096))
-    refresh_token: Mapped[str] = mapped_column(String(4096), default="")
-    github_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
+    user_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    active_organization_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+
+
+class User(Base):
+    """kodai user profile; authentication methods live in AuthIdentity."""
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(
+        Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()),
+    )
+    email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True, nullable=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    avatar_url: Mapped[str] = mapped_column(Text, default="")
+    job_function: Mapped[str] = mapped_column(String(64), default="")
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AuthIdentity(Base):
+    __tablename__ = "auth_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_auth_identity_provider_user"),
+        UniqueConstraint("user_id", "provider", name="uq_auth_identity_user_provider"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))  # email_password or github
+    provider_user_id: Mapped[str] = mapped_column(String(320))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_username: Mapped[str] = mapped_column(String(255), default="")
+    access_token: Mapped[str] = mapped_column(String(4096), default="")
+    refresh_token: Mapped[str] = mapped_column(String(4096), default="")
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    refresh_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(255))
+    created_by_user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OrganizationMembership(Base):
+    __tablename__ = "organization_memberships"
+    __table_args__ = (UniqueConstraint("organization_id", "user_id", name="uq_organization_membership"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="knowledge")
+    audience: Mapped[str] = mapped_column(String(32), default="all")
+    repository_scope: Mapped[str] = mapped_column(String(16), default="all")
+    repository_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="knowledge")
+    audience: Mapped[str] = mapped_column(String(32), default="all")
+    repository_scope: Mapped[str] = mapped_column(String(16), default="all")
+    repository_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    invited_by_user_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

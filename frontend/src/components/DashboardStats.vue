@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { CircleCheck, DollarSign, GitPullRequest, TriangleAlert } from '@lucide/vue'
 
 const props = defineProps({
   pulls: { type: Array, default: () => [] },
@@ -16,19 +17,19 @@ const processingCount = computed(() => props.pulls.filter(pull => ['pending', 'p
 <template>
   <section class="stat-grid" aria-label="Repository activity">
     <button class="stat-card" type="button" aria-label="View open pull requests" @click="emit('navigate', 'open')">
-      <div class="stat-label"><span>OPEN PULL REQUESTS</span><span class="stat-icon icon-violet">⑂</span></div>
+      <div class="stat-label"><span>OPEN PULL REQUESTS</span><span class="stat-icon icon-violet"><GitPullRequest :size="14" :stroke-width="1.8" aria-hidden="true" /></span></div>
       <div class="stat-value">{{ pullsLoading ? '…' : openCount }}</div><div class="stat-caption">Across this repository</div>
     </button>
     <button class="stat-card" type="button" aria-label="View completed reviews" @click="emit('navigate', 'complete')">
-      <div class="stat-label"><span>REVIEWS COMPLETE</span><span class="stat-icon icon-blue">✓</span></div>
+      <div class="stat-label"><span>REVIEWS COMPLETE</span><span class="stat-icon icon-blue"><CircleCheck :size="14" :stroke-width="1.8" aria-hidden="true" /></span></div>
       <div class="stat-value">{{ pullsLoading ? '…' : completedCount }}</div><div class="stat-caption">{{ pullsLoading ? 'Loading review activity…' : processingCount + ' currently processing' }}</div>
     </button>
     <button class="stat-card" type="button" @click="emit('navigate', 'findings')">
-      <div class="stat-label"><span>ACTIONABLE FINDINGS</span><span class="stat-icon icon-amber">!</span></div>
+      <div class="stat-label"><span>ACTIONABLE FINDINGS</span><span class="stat-icon icon-amber"><TriangleAlert :size="14" :stroke-width="1.8" aria-hidden="true" /></span></div>
       <div class="stat-value">{{ pullsLoading ? '…' : findingCount }}</div><div class="stat-caption">Across analyzed pull requests</div>
     </button>
     <button class="stat-card stat-card-status" type="button" @click="emit('navigate', 'usage')">
-      <div class="stat-label"><span>WORKSPACE AI SPEND</span><span class="stat-icon icon-green">$</span></div>
+      <div class="stat-label"><span>WORKSPACE AI SPEND</span><span class="stat-icon icon-green"><DollarSign :size="14" :stroke-width="1.8" aria-hidden="true" /></span></div>
       <div class="stat-value">${{ totalCost.toFixed(4) }}</div><div class="stat-caption">Estimated across connected repositories</div>
     </button>
   </section>

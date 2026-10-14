@@ -221,8 +221,8 @@ def build_repo_book(repo_id: int, progress_callback=None):
         repo = db.get(Repository, repo_id)
         if not repo or not repo.enabled:
             return True
-        workspace_markdown, repository_markdown = load_context(db, repo.installation_id, repo_id)
-        maintainer_context = format_context(workspace_markdown, repository_markdown)
+        organization_markdown, repository_markdown = load_context(db, repo.installation_id, repo_id)
+        maintainer_context = format_context(organization_markdown, repository_markdown)
         token = installation_token(repo.installation_id)
         meta = github_request("GET", f"/repos/{repo.full_name}", token)
         branch = meta.get("default_branch", "main")
@@ -351,12 +351,12 @@ def build_repo_book(repo_id: int, progress_callback=None):
         module_context = "\n".join(f"{module}: {summary}" for module, summary in module_summaries.items())
         inventory = "\n".join(f"- {path}" for path, _ in files_summary)
         maintainer_sources = []
-        if workspace_markdown.strip():
-            maintainer_sources.append("SOURCE: Workspace context (maintainer-maintained Markdown)\n" + workspace_markdown)
+        if organization_markdown.strip():
+            maintainer_sources.append("SOURCE: Organization context (maintainer-maintained Markdown)\n" + organization_markdown)
         if repository_markdown.strip():
             maintainer_sources.append("SOURCE: Repository context (maintainer-maintained Markdown)\n" + repository_markdown)
         guide_context = (
-            (("MAINTAINER-PROVIDED CONTEXT (use for product and operational understanding; repository-specific context overrides workspace context):\n"
+            (("MAINTAINER-PROVIDED CONTEXT (use for product and operational understanding; repository-specific context overrides organization context):\n"
              + "\n\n".join(maintainer_sources)[:18000] + "\n\n") if maintainer_context else "")
             + "REPOSITORY FILE INVENTORY (only these paths may be cited):\n" + inventory[:12000]
             + "\n\nMODULE SUMMARIES:\n" + module_context[:16000]
@@ -373,8 +373,8 @@ def build_repo_book(repo_id: int, progress_callback=None):
             instructions = _repo_book_guide_instructions()
             result = ai.analyze("repo_book_guide", instructions, guide_context)
             allowed_paths = {path for path, _ in files_summary}
-            if workspace_markdown.strip():
-                allowed_paths.add("Workspace context")
+            if organization_markdown.strip():
+                allowed_paths.add("Organization context")
             if repository_markdown.strip():
                 allowed_paths.add("Repository context")
             generated = result.get("sections", [])
@@ -481,9 +481,9 @@ def _clean_guide_blocks(value):
 def _repo_book_guide_instructions():
     return '''Return ONLY JSON with {"sections":[{"title":"...","category":"...","audiences":[...],"summary":"...","blocks":[...],"source_paths":[...]}]}. Create a repository-specific table of contents. Do not use a fixed set of chapter names or force standard product, business, operations, support, or architecture chapters. Infer useful chapters from the actual subsystems, product concepts, workflows, documentation, and boundaries visible in the supplied repository. Use natural titles that describe this repository's own features and concepts. Merge overlapping topics. Include a chapter only when the sources support a useful explanation. Return fewer chapters when evidence is limited; return [] rather than empty/template chapters when nothing meaningful can be written.
 
-This is a practical guide for new hires and engineering, operations, support, and sales. Write plainly and explain local terms. Use maintainer context for product, users, business rules, and operational knowledge; use repository inventory, module summaries, and direct documentation for code behavior and implementation. Repository context takes precedence over workspace context when they conflict. Do not infer customers, market, business value, policies, deployment steps, commands, user journeys, or operational procedures unless those sources support them. Omit unsupported topics entirely; do not write “no information was provided”, “not documented”, generic placeholders, or evidence-gap chapters. Avoid generic introductions, repeated summaries, filler, and claims like “robust/scalable/seamless”.
+This is a practical guide for new hires and engineering, operations, support, and sales. Write plainly and explain local terms. Use maintainer context for product, users, business rules, and operational knowledge; use repository inventory, module summaries, and direct documentation for code behavior and implementation. Repository context takes precedence over organization context when they conflict. Do not infer customers, market, business value, policies, deployment steps, commands, user journeys, or operational procedures unless those sources support them. Omit unsupported topics entirely; do not write “no information was provided”, “not documented”, generic placeholders, or evidence-gap chapters. Avoid generic introductions, repeated summaries, filler, and claims like “robust/scalable/seamless”.
 
-Each chapter must teach a concrete repository-specific idea and include a short summary plus 2-6 useful blocks. Group related components; do not create one chapter per file or directory. Return at most 12 chapters so each one can be detailed and reviewed. Block formats: {"type":"paragraph","text":"..."}, {"type":"bullets","items":[...]}, {"type":"steps","items":[...]}, {"type":"table","columns":[...],"rows":[...]}, {"type":"callout","label":"...","text":"..."}. Prefer tables for mappings when useful. Use steps only for an evidenced sequence. Include relative paths inline in factual explanations. source_paths must cite exact supporting inventory paths and may cite the exact labels "Workspace context" or "Repository context" when maintainer Markdown supports a claim. Chapters without supporting sources must be omitted. Aim for 80-200 words per chapter, using more only where the repository has real detail. Audience values: everyone, developers, operations, support, sales.'''
+Each chapter must teach a concrete repository-specific idea and include a short summary plus 2-6 useful blocks. Group related components; do not create one chapter per file or directory. Return at most 12 chapters so each one can be detailed and reviewed. Block formats: {"type":"paragraph","text":"..."}, {"type":"bullets","items":[...]}, {"type":"steps","items":[...]}, {"type":"table","columns":[...],"rows":[...]}, {"type":"callout","label":"...","text":"..."}. Prefer tables for mappings when useful. Use steps only for an evidenced sequence. Include relative paths inline in factual explanations. source_paths must cite exact supporting inventory paths and may cite the exact labels "Organization context" or "Repository context" when maintainer Markdown supports a claim. Chapters without supporting sources must be omitted. Aim for 80-200 words per chapter, using more only where the repository has real detail. Audience values: everyone, developers, operations, support, sales.'''
 
 def _guide_block_text(blocks):
     values = []

@@ -6,3 +6,4 @@ pem/
 *.db
 node_modules/
 dist/
+/backend/.kodai/

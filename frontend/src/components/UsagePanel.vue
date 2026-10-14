@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { DollarSign } from '@lucide/vue'
 
 const props = defineProps({ usage: { type: Array, default: () => [] } })
 const totalCost = computed(() => props.usage.reduce((sum, item) => sum + item.estimated_cost_usd, 0))
@@ -11,7 +12,7 @@ const modelCount = computed(() => new Set(props.usage.map(item => item.model)).s
   <section class="panel-card">
     <div class="panel-header"><div><span class="panel-kicker">MODEL ACTIVITY</span><h2>AI usage</h2><p>Estimated spend and token counts for connected repositories.</p></div></div>
     <div v-if="!usage.length" class="empty-state">
-      <span class="empty-state-icon">$</span><h3>No usage recorded</h3><p>Usage appears here after a pull request review or Handbook generation.</p>
+      <span class="empty-state-icon"><DollarSign :size="18" aria-hidden="true" /></span><h3>No usage recorded</h3><p>Usage appears here after a pull request review or Handbook generation.</p>
     </div>
     <div v-else>
       <div class="usage-overview">
