@@ -1,6 +1,7 @@
 import { createApp, createSSRApp } from 'vue'
 import App from './App.vue'
 import './styles/main.css'
+import { initializeAnalytics } from './services/analytics.js'
 
 const API_BASE = import.meta.env.VITE_API_URL || ''
 
@@ -27,6 +28,7 @@ async function mountApp() {
     }
   }
 
+  initializeAnalytics()
   const app = prerenderedLanding && window.location.pathname === '/' ? createSSRApp(App) : createApp(App)
   app.mount('#app')
 }
