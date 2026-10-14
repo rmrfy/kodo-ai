@@ -25,7 +25,7 @@ function routeDefaults(overrides = {}) {
   }
 }
 
-export function resolveAppRoute(href = window.location.href) {
+export function resolveAppRoute(href = typeof window === 'undefined' ? 'http://localhost/' : window.location.href) {
   const url = new URL(href)
   let parts
   try {

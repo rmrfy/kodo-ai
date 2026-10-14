@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { FolderGit2, Plus, Users, Trash2, RefreshCw } from '@lucide/vue'
-import SelectMenu from './SelectMenu.vue'
+import SelectMenu from '../ui/SelectMenu.vue'
 const props = defineProps({
   user: { type: String, default: '' },
   email: { type: String, default: '' },
