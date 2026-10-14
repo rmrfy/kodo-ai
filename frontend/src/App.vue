@@ -1,4 +1,5 @@
 <script setup>
+import { watch } from 'vue'
 import AppLayout from './layouts/AppLayout.vue'
 import AuthPage from './pages/AuthPage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
@@ -7,6 +8,7 @@ import NotFoundPage from './pages/NotFoundPage.vue'
 import SessionPage from './pages/SessionPage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
 import { useAppController } from './composables/useAppController.js'
+import { trackPageView } from './services/analytics.js'
 
 const {
   API_BASE, loading, page, signedIn, authMode, error, authName, authEmail, authPassword,
@@ -22,6 +24,27 @@ const {
   selectTab, selectHandbookSection, selectPullFilter, rebuildBook, askRepoQuestion,
   clearRepoChat, openSessionWorkspace, startSessionWorkspace, loadPulls, tab,
 } = useAppController()
+
+watch([
+  () => loading.value,
+  () => page.value,
+  () => tab.value,
+  // These IDs/slugs are only watch triggers; they are never sent to analytics.
+  () => selected.value,
+  () => sessionWorkspaceProps.value.session?.id || null,
+  () => dashboardProps.value.handbookSlug || '',
+  () => dashboardProps.value.pullFilter,
+], ([isLoading, currentPage, currentTab, repositoryId, sessionId, handbookSlug, pullFilter]) => {
+  if (isLoading) return
+  trackPageView({
+    page: currentPage,
+    tab: currentTab,
+    hasRepository: Boolean(repositoryId),
+    hasSession: Boolean(sessionId),
+    hasHandbookSection: Boolean(handbookSlug),
+    pullFilter,
+  })
+}, { immediate: true, flush: 'post' })
 </script>
 
 <template>

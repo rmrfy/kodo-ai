@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ArrowUpRight, BookOpen, Check, Code2, GitPullRequest, Sparkles, TriangleAlert } from '@lucide/vue'
+import { trackWaitlistCta, trackWaitlistSignupCompleted } from '../services/analytics.js'
 
 const props = defineProps({ apiBase: { type: String, default: '' } })
 const email = ref('')
@@ -242,7 +243,8 @@ function setupHeroParticles() {
   }
 }
 
-function scrollToWaitlist() {
+function scrollToWaitlist(placement) {
+  trackWaitlistCta(placement)
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   landingNav.value?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' })
   if (waitlistHighlightTimer) clearTimeout(waitlistHighlightTimer)
@@ -314,6 +316,7 @@ async function joinWaitlist() {
     const result = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(result.detail || 'Could not join the waitlist. Please try again.')
     submitted.value = true
+    trackWaitlistSignupCompleted()
   } catch (err) {
     error.value = err.message || 'Could not join the waitlist. Please try again.'
   } finally {
@@ -329,7 +332,7 @@ async function joinWaitlist() {
         <span class="landing-brand-mark">k</span>
         <span>kodai</span>
       </a>
-      <a class="landing-nav-cta" href="#waitlist" @click.prevent="scrollToWaitlist">Join the waitlist <ArrowUpRight :size="14" aria-hidden="true" /></a>
+      <a class="landing-nav-cta" href="#waitlist" @click.prevent="scrollToWaitlist('header')">Join the waitlist <ArrowUpRight :size="14" aria-hidden="true" /></a>
     </header>
 
     <section ref="heroSection" class="landing-hero">
@@ -392,7 +395,7 @@ async function joinWaitlist() {
     <section class="context-band">
       <div class="context-band-mark"><Sparkles :size="16" /></div>
       <div><h2>One understanding. From code changes to customer answers.</h2><p>Sessions, reviews, the Handbook, and connected workflows can all work from the same evolving picture of your product.</p></div>
-      <a href="#waitlist" @click.prevent="scrollToWaitlist">Get the launch update <ArrowUpRight :size="14" aria-hidden="true" /></a>
+      <a href="#waitlist" @click.prevent="scrollToWaitlist('context_band')">Get the launch update <ArrowUpRight :size="14" aria-hidden="true" /></a>
     </section>
 
     <footer class="landing-footer">
