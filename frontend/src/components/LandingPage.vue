@@ -328,6 +328,8 @@ async function joinWaitlist() {
 .landing-nav { height: var(--landing-nav-height); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .landing-brand { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); font-size: 18px; font-weight: 680; letter-spacing: -.7px; text-decoration: none; }
 .landing-brand-mark { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; background: var(--brand); color: #fff; font-size: 17px; font-weight: 720; letter-spacing: -1px; }
+.landing-nav .landing-brand { font-size: 19px; }
+.landing-nav .landing-brand-mark { width: 32px; height: 32px; font-size: 18px; }
 .landing-nav-cta, .context-band > a { display: inline-flex; align-items: center; gap: 7px; color: var(--brand); font-size: 12px; font-weight: 630; text-decoration: none; transition: gap .16s ease; }
 .landing-nav-cta:hover, .context-band > a:hover { gap: 10px; }
 .landing-hero { position: relative; isolation: isolate; display: grid; width: 100%; min-height: calc(100vh - var(--landing-nav-height)); min-height: calc(100svh - var(--landing-nav-height)); place-items: center; overflow: hidden; padding: 72px 0; text-align: center; }
@@ -383,8 +385,8 @@ async function joinWaitlist() {
 .context-band p { margin-top: 6px; color: #c4d5c7; font-size: 12px; line-height: 1.6; }
 .context-band > a { color: #e1f0e2; white-space: nowrap; }
 .landing-footer { display: flex; align-items: center; justify-content: space-between; min-height: 67px; border-top: 1px solid var(--line); }
-.landing-footer-brand { gap: 7px; font-size: 14px; }
-.landing-footer-brand .landing-brand-mark { width: 23px; height: 23px; border-radius: 6px; font-size: 14px; }
+.landing-footer-brand { gap: 8px; font-size: 16px; }
+.landing-footer-brand .landing-brand-mark { width: 26px; height: 26px; border-radius: 7px; font-size: 15px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (min-width: 900px) {
   .section-heading > p { max-width: none; flex: none; white-space: nowrap; }
