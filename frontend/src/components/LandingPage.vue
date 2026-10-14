@@ -259,7 +259,7 @@ async function joinWaitlist() {
         <h1>Build software with the <em>whole product in view.</em></h1>
         <p class="landing-intro">kodai connects coding agents, pull request insight, and a living product handbook, keeping the context close for the people who build, sell, and support what you ship.</p>
 
-        <form id="waitlist" ref="waitlistForm" class="waitlist-form" :class="{ 'waitlist-highlighted': waitlistHighlighted, 'waitlist-invalid': inputInvalid }" @submit.prevent="joinWaitlist" novalidate>
+        <form id="waitlist" ref="waitlistForm" class="waitlist-form" :class="{ 'waitlist-highlighted': waitlistHighlighted, 'waitlist-invalid': inputInvalid, 'waitlist-complete': submitted }" @submit.prevent="joinWaitlist" novalidate>
           <template v-if="!submitted">
             <label class="sr-only" for="waitlist-email">Email address</label>
             <input id="waitlist-email" ref="waitlistInput" v-model="email" type="email" name="email" autocomplete="email" maxlength="320" placeholder="Your email address" required :disabled="submitting" :aria-invalid="inputInvalid" :aria-describedby="error ? 'waitlist-error' : 'waitlist-note'" @input="error = ''; inputInvalid = false" />
@@ -342,6 +342,7 @@ async function joinWaitlist() {
 .waitlist-form.waitlist-highlighted::after { position: absolute; z-index: 2; inset: -6px; border: 2px solid #5e9468; border-radius: 13px; box-shadow: 0 0 0 5px #76a98445, 0 0 30px #6f9e7948; content: ''; pointer-events: none; animation: waitlist-highlight 2.1s ease-out both; }
 .waitlist-form:focus-within { border-color: #9ab5a0; box-shadow: 0 0 0 3px #315f4a12; }
 .waitlist-form.waitlist-invalid { border-color: #c77c75; background: #fffdfd; box-shadow: 0 0 0 3px #a84d4814; }
+.waitlist-form.waitlist-complete { justify-content: center; border-color: #bfd3c1; background: #f4f8f4; box-shadow: 0 0 0 2px #315f4a0d, 0 5px 16px #2845350b; }
 .waitlist-form input { flex: 1; min-width: 0; padding: 0 11px; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 14px; }
 .waitlist-form input::placeholder { color: #929d95; }
 .waitlist-form button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-width: 153px; padding: 0 15px; border: 0; border-radius: 6px; background: var(--brand); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .16s ease, transform .16s ease; }
@@ -350,11 +351,11 @@ async function joinWaitlist() {
 .waitlist-note, .waitlist-error { margin: 12px 0 0; color: #929c95; font-size: 12px; }
 .waitlist-error { display: flex; align-items: center; justify-content: center; gap: 6px; color: #9b514c; font-size: 12px; line-height: 1.5; }
 .waitlist-error svg { flex: none; }
-.waitlist-success { display: flex; align-items: center; gap: 10px; padding: 0 12px; }
-.waitlist-success > span { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 50%; background: #eaf2eb; color: var(--brand); }
-.waitlist-success div { display: grid; gap: 2px; }
-.waitlist-success strong { font-size: 12px; font-weight: 650; }
-.waitlist-success small { color: var(--muted); font-size: 11px; }
+.waitlist-success { display: flex; width: 100%; align-items: center; justify-content: center; gap: 11px; padding: 4px 14px; animation: waitlist-success-in .28s ease-out both; }
+.waitlist-success > span { display: grid; flex: none; width: 31px; height: 31px; place-items: center; border: 1px solid #d4e4d5; border-radius: 50%; background: #e9f2e9; color: var(--brand); }
+.waitlist-success div { display: grid; gap: 3px; text-align: left; }
+.waitlist-success strong { color: #30483a; font-size: 13px; font-weight: 650; }
+.waitlist-success small { color: #718077; font-size: 11px; line-height: 1.4; }
 .capabilities { padding: 0 0 64px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
 .section-heading h2 { margin-top: 10px; color: #34443a; font-size: clamp(21px, 2.3vw, 27px); font-weight: 540; letter-spacing: -.045em; }
@@ -389,9 +390,11 @@ async function joinWaitlist() {
   .section-heading > p { max-width: none; flex: none; white-space: nowrap; }
 }
 @keyframes waitlist-highlight { 0% { opacity: 0; transform: scale(.985); } 14% { opacity: 1; transform: scale(1); } 46% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.035); } }
+@keyframes waitlist-success-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) {
   .capability-card { animation: none !important; transition: none !important; }
   .waitlist-form.waitlist-highlighted::after { animation-duration: .7s; }
+  .waitlist-success { animation: none; }
   .capability-card:hover { transform: none; box-shadow: none; }
 }
 @media (max-width: 900px) {
