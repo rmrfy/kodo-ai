@@ -182,6 +182,7 @@ class WaitlistSignup(Base):
     email: Mapped[str] = mapped_column(String(320))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+
 class UserSession(Base):
     __tablename__ = "user_sessions"
     id: Mapped[str] = mapped_column(String(128), primary_key=True)

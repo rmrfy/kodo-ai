@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { ArrowRight, MessagesSquare, Plus, Search } from '@lucide/vue'
-import SelectMenu from './SelectMenu.vue'
+import SelectMenu from '../ui/SelectMenu.vue'
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },

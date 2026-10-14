@@ -19,6 +19,7 @@ let scrollFrame = null
 let particleFrame = null
 let particleResizeObserver = null
 let particleMutationObserver = null
+let particleIntersectionObserver = null
 let stopParticleAnimation = null
 
 function setupHeroParticles() {
@@ -28,13 +29,24 @@ function setupHeroParticles() {
   if (!canvas || !section || !context) return
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const cores = navigator.hardwareConcurrency || 8
+  const memory = navigator.deviceMemory || 8
+  const saveData = navigator.connection?.saveData === true
+  const lowPower = saveData || cores <= 4 || (navigator.deviceMemory !== undefined && memory <= 4)
+  let compactScreen = window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 760
+  let pixelRatio = Math.min(window.devicePixelRatio || 1, lowPower ? 1 : compactScreen ? 1.25 : 1.5)
+  const frameInterval = lowPower ? 1000 / 24 : 1000 / 30
+  const opacityBucketCount = 32
   let width = 0
   let height = 0
   let particles = []
+  const particleBuckets = Array.from({ length: opacityBucketCount }, () => [])
+  const shineBuckets = Array.from({ length: opacityBucketCount }, () => [])
   let textRects = []
   let phase = 0
   let previousTime = 0
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+  let lastDrawTime = 0
+  let isInViewport = false
 
   const refreshTextRects = () => {
     if (!heroCopy.value) return
@@ -85,10 +97,15 @@ function setupHeroParticles() {
     const bounds = section.getBoundingClientRect()
     width = bounds.width
     height = bounds.height
+    compactScreen = window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 760
+    pixelRatio = Math.min(window.devicePixelRatio || 1, lowPower ? 1 : compactScreen ? 1.25 : 1.5)
     canvas.width = Math.round(width * pixelRatio)
     canvas.height = Math.round(height * pixelRatio)
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
-    const count = Math.max(2600, Math.min(18000, Math.round(width * 14)))
+    const density = lowPower ? 7.5 : compactScreen ? 10 : 14
+    const minimum = lowPower ? 1600 : 2600
+    const maximum = lowPower ? 7000 : compactScreen ? 10000 : 18000
+    const count = Math.max(minimum, Math.min(maximum, Math.round(width * density)))
     particles = Array.from({ length: count }, () => ({
       x: Math.random() * width,
       offset: (Math.random() + Math.random() - 1) * Math.min(76, height * 0.105),
@@ -103,10 +120,12 @@ function setupHeroParticles() {
 
   const draw = (time, animate) => {
     if (!width || !height) return
-    const delta = previousTime ? Math.min((time - previousTime) / 1000, 0.05) : 0
+    const delta = previousTime ? Math.min((time - previousTime) / 1000, 0.08) : 0
     previousTime = time || previousTime
     if (animate) phase += delta * 0.16
     context.clearRect(0, 0, width, height)
+    for (const bucket of particleBuckets) bucket.length = 0
+    for (const bucket of shineBuckets) bucket.length = 0
     const baseY = height * 0.65
     const amplitude = Math.min(62, height * 0.105)
     const longWave = (Math.PI * 2 * 1.15) / width
@@ -126,31 +145,78 @@ function setupHeroParticles() {
       for (const rect of textRects) {
         const outsideX = Math.max(rect.left - x, 0, x - rect.right)
         const outsideY = Math.max(rect.top - y, 0, y - rect.bottom)
-        const distance = Math.hypot(outsideX, outsideY)
-        const fadeProgress = Math.min(1, distance / 64)
+        const distanceSquared = outsideX * outsideX + outsideY * outsideY
+        if (distanceSquared >= 4096) continue
+        const fadeProgress = Math.sqrt(distanceSquared) / 64
         const smoothFade = fadeProgress * fadeProgress * (3 - 2 * fadeProgress)
         copyFade = Math.min(copyFade, 0.24 + smoothFade * 0.76)
         if (copyFade <= 0.24) break
       }
 
-      context.beginPath()
-      context.arc(x, y, particle.radius, 0, Math.PI * 2)
       const opacity = particle.opacity * copyFade
-      context.fillStyle = `rgba(29, 54, 35, ${opacity})`
-      context.fill()
+      const opacityBucket = Math.min(opacityBucketCount - 1, Math.floor(opacity * opacityBucketCount))
+      particle.renderY = y
+      particleBuckets[opacityBucket].push(particle)
       if (particle.shine && particle.radius > 0.52) {
-        context.beginPath()
-        context.arc(x - particle.radius * 0.25, y - particle.radius * 0.25, particle.radius * 0.28, 0, Math.PI * 2)
-        context.fillStyle = `rgba(225, 239, 221, ${Math.min(0.62, opacity * 1.8)})`
-        context.fill()
+        const shineOpacity = Math.min(0.62, opacity * 1.8)
+        const shineBucket = Math.min(opacityBucketCount - 1, Math.floor(shineOpacity * opacityBucketCount))
+        shineBuckets[shineBucket].push(particle)
       }
     }
+
+    // Batch circles with similar opacity so the canvas performs a few fills per
+    // frame instead of thousands of individual draw operations.
+    context.fillStyle = 'rgb(29, 54, 35)'
+    for (let index = 0; index < opacityBucketCount; index += 1) {
+      const bucket = particleBuckets[index]
+      if (!bucket.length) continue
+      context.globalAlpha = (index + 0.5) / opacityBucketCount
+      context.beginPath()
+      for (const particle of bucket) {
+        context.moveTo(particle.x + particle.radius, particle.renderY)
+        context.arc(particle.x, particle.renderY, particle.radius, 0, Math.PI * 2)
+      }
+      context.fill()
+    }
+
+    context.fillStyle = 'rgb(225, 239, 221)'
+    for (let index = 0; index < opacityBucketCount; index += 1) {
+      const bucket = shineBuckets[index]
+      if (!bucket.length) continue
+      context.globalAlpha = (index + 0.5) / opacityBucketCount
+      context.beginPath()
+      for (const particle of bucket) {
+        const x = particle.x - particle.radius * 0.25
+        const y = particle.renderY - particle.radius * 0.25
+        const radius = particle.radius * 0.28
+        context.moveTo(x + radius, y)
+        context.arc(x, y, radius, 0, Math.PI * 2)
+      }
+      context.fill()
+    }
+    context.globalAlpha = 1
   }
 
   const animate = (time) => {
-    draw(time, true)
+    if (time - lastDrawTime >= frameInterval) {
+      draw(time, true)
+      lastDrawTime = time
+    }
     particleFrame = window.requestAnimationFrame(animate)
   }
+
+  const syncAnimation = () => {
+    const shouldAnimate = !reducedMotion && isInViewport && document.visibilityState === 'visible'
+    if (shouldAnimate && particleFrame === null) {
+      lastDrawTime = 0
+      particleFrame = window.requestAnimationFrame(animate)
+    } else if (!shouldAnimate && particleFrame !== null) {
+      window.cancelAnimationFrame(particleFrame)
+      particleFrame = null
+    }
+  }
+
+  const onVisibilityChange = () => syncAnimation()
 
   particleResizeObserver = new ResizeObserver(resize)
   particleResizeObserver.observe(section)
@@ -159,12 +225,20 @@ function setupHeroParticles() {
     if (reducedMotion) draw(performance.now(), false)
   })
   particleMutationObserver.observe(heroCopy.value, { childList: true, characterData: true, subtree: true })
+  particleIntersectionObserver = new IntersectionObserver((entries) => {
+    isInViewport = entries[0]?.isIntersecting === true
+    syncAnimation()
+  })
+  particleIntersectionObserver.observe(section)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   resize()
-  if (!reducedMotion) particleFrame = window.requestAnimationFrame(animate)
   stopParticleAnimation = () => {
     if (particleFrame !== null) window.cancelAnimationFrame(particleFrame)
+    particleFrame = null
     particleResizeObserver?.disconnect()
     particleMutationObserver?.disconnect()
+    particleIntersectionObserver?.disconnect()
+    document.removeEventListener('visibilitychange', onVisibilityChange)
   }
 }
 
@@ -197,6 +271,11 @@ function scrollToWaitlist() {
     scrollFrame = requestAnimationFrame(waitUntilTop)
   }
   scrollFrame = requestAnimationFrame(waitUntilTop)
+}
+
+function scrollToTop() {
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  window.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })
 }
 
 onMounted(setupHeroParticles)
@@ -246,7 +325,7 @@ async function joinWaitlist() {
 <template>
   <main class="landing-page">
     <header ref="landingNav" class="landing-nav">
-      <a class="landing-brand" href="/" aria-label="kodai home">
+      <a class="landing-brand" href="/" aria-label="kodai home" @click.prevent="scrollToTop">
         <span class="landing-brand-mark">k</span>
         <span>kodai</span>
       </a>
@@ -265,10 +344,10 @@ async function joinWaitlist() {
             <input id="waitlist-email" ref="waitlistInput" v-model="email" type="email" name="email" autocomplete="email" maxlength="320" placeholder="Your email address" required :disabled="submitting" :aria-invalid="inputInvalid" :aria-describedby="error ? 'waitlist-error' : 'waitlist-note'" @input="error = ''; inputInvalid = false" />
             <button type="submit" :disabled="submitting">{{ submitting ? 'Joining…' : 'Join the waitlist' }} <ArrowUpRight :size="15" aria-hidden="true" /></button>
           </template>
-          <div v-else class="waitlist-success" role="status"><span><Check :size="15" aria-hidden="true" /></span><div><strong>You’re on the list.</strong><small>We’ll send you a note when kodai is ready.</small></div></div>
+          <div v-else class="waitlist-success" role="status"><span><Check :size="15" aria-hidden="true" /></span><div><strong>You’re on the list.</strong><small>We’ll let you know when kodai is live.</small></div></div>
         </form>
         <p v-if="error" id="waitlist-error" class="waitlist-error" role="alert"><TriangleAlert :size="13" aria-hidden="true" />{{ error }}</p>
-        <p v-else-if="!submitted" id="waitlist-note" class="waitlist-note">We’ll let you know when kodai is ready.</p>
+        <p v-else-if="!submitted" id="waitlist-note" class="waitlist-note">We’ll let you know when kodai is live.</p>
       </div>
 
     </section>
@@ -317,7 +396,7 @@ async function joinWaitlist() {
     </section>
 
     <footer class="landing-footer">
-      <a class="landing-brand landing-footer-brand" href="/" aria-label="kodai home"><span class="landing-brand-mark">k</span><span>kodai</span></a>
+      <a class="landing-brand landing-footer-brand" href="/" aria-label="kodai home" @click.prevent="scrollToTop"><span class="landing-brand-mark">k</span><span>kodai</span></a>
     </footer>
   </main>
 </template>
@@ -328,9 +407,12 @@ async function joinWaitlist() {
 .landing-nav { height: var(--landing-nav-height); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .landing-brand { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); font-size: 18px; font-weight: 680; letter-spacing: -.7px; text-decoration: none; }
 .landing-brand-mark { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 8px; background: var(--brand); color: #fff; font-size: 17px; font-weight: 720; letter-spacing: -1px; }
-.landing-nav-cta, .context-band > a { display: inline-flex; align-items: center; gap: 7px; color: var(--brand); font-size: 12px; font-weight: 630; text-decoration: none; transition: gap .16s ease; }
+.landing-nav .landing-brand { font-size: 19px; }
+.landing-nav .landing-brand-mark { width: 32px; height: 32px; font-size: 18px; }
+.landing-nav-cta, .context-band > a { display: inline-flex; align-items: center; gap: 7px; color: var(--brand); font-size: 14px; font-weight: 630; text-decoration: none; transition: gap .16s ease; }
+.landing-nav-cta { font-size: 13px; }
 .landing-nav-cta:hover, .context-band > a:hover { gap: 10px; }
-.landing-hero { position: relative; isolation: isolate; display: grid; width: 100%; min-height: calc(100vh - var(--landing-nav-height)); min-height: calc(100svh - var(--landing-nav-height)); place-items: center; overflow: hidden; padding: 72px 0; text-align: center; }
+.landing-hero { position: relative; isolation: isolate; display: grid; width: 100%; min-height: calc(100vh - var(--landing-nav-height)); min-height: calc(100svh - var(--landing-nav-height)); place-items: center; overflow: hidden; padding: 0; text-align: center; }
 .hero-particles { position: absolute; z-index: -1; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
 .landing-copy { position: relative; z-index: 1; display: flex; width: min(920px, calc(100% - 64px)); flex-direction: column; align-items: center; padding: 4px 0 10px; transform: translateY(-39px); }
 .section-kicker { color: var(--brand); font-family: var(--mono, monospace); font-size: 10px; font-weight: 650; letter-spacing: .1em; }
@@ -383,8 +465,8 @@ async function joinWaitlist() {
 .context-band p { margin-top: 6px; color: #c4d5c7; font-size: 12px; line-height: 1.6; }
 .context-band > a { color: #e1f0e2; white-space: nowrap; }
 .landing-footer { display: flex; align-items: center; justify-content: space-between; min-height: 67px; border-top: 1px solid var(--line); }
-.landing-footer-brand { gap: 7px; font-size: 14px; }
-.landing-footer-brand .landing-brand-mark { width: 23px; height: 23px; border-radius: 6px; font-size: 14px; }
+.landing-footer-brand { gap: 8px; font-size: 16px; }
+.landing-footer-brand .landing-brand-mark { width: 26px; height: 26px; border-radius: 7px; font-size: 15px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (min-width: 900px) {
   .section-heading > p { max-width: none; flex: none; white-space: nowrap; }
@@ -398,13 +480,11 @@ async function joinWaitlist() {
   .capability-card:hover { transform: none; box-shadow: none; }
 }
 @media (max-width: 900px) {
-  .landing-hero { padding: 64px 0; }
   .landing-copy h1 { font-size: clamp(43px, 6.3vw, 58px); }
 }
 @media (max-width: 760px) {
   .landing-nav, .capabilities, .context-band, .landing-footer { width: min(100% - 40px, 560px); }
   .landing-copy { width: calc(100% - 40px); }
-  .landing-hero { padding: 60px 0; }
   .landing-copy h1 { font-size: clamp(40px, 7.3vw, 54px); }
   .section-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
   .section-heading > p { max-width: 440px; }
@@ -413,7 +493,6 @@ async function joinWaitlist() {
   .landing-nav, .capabilities, .context-band, .landing-footer { width: min(100% - 36px, 480px); }
   .landing-copy { width: calc(100% - 36px); }
   .landing-page { --landing-nav-height: 66px; }
-  .landing-hero { padding: 78px 0 80px; }
   .landing-copy { transform: translateY(-33px); }
   .landing-copy h1 { max-width: 470px; margin-top: 20px; font-size: clamp(37px, 9.5vw, 47px); }
   .landing-intro { font-size: 14px; line-height: 1.7; }

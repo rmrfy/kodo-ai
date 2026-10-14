@@ -35,3 +35,4 @@ CODING_WORKSPACE_DIR = (
 ).resolve()
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 GITHUB_OAUTH_REDIRECT_URI = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "http://localhost:8000/auth/callback").strip()
+DISABLE_APP_ROUTES = os.getenv("KODAI_DISABLE_APP_ROUTES", "false").strip().lower() == "true"

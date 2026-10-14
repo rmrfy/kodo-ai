@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { ArrowRight, BookOpen, ChevronDown, FileCode2, RotateCw, Search } from '@lucide/vue'
-import SelectMenu from './SelectMenu.vue'
+import SelectMenu from '../ui/SelectMenu.vue'
 
 const props = defineProps({
   sections: { type: Array, default: () => [] },
