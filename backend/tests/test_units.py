@@ -100,7 +100,7 @@ class CodingAgentProviderTest(unittest.TestCase):
             self.assertEqual(self.env["CODEX_API_KEY"], "test-key")
             self.assertNotIn("KODO_GIT_TOKEN", self.env)
             self.assertEqual(self.prompt.count("Implement the requested feature."), 1)
-            self.assertEqual([event.stage for event in progress], ["working", "editing"])
+            self.assertEqual([event.stage for event in progress], ["thinking", "editing"])
             self.assertIn("Continue on the session PR branch kodo/add-feature-1.", self.prompt)
 
     def test_codex_normalizes_blocked_outcome_separately_from_response(self):
@@ -145,8 +145,8 @@ class CodingAgentProviderTest(unittest.TestCase):
 
     def test_task_orchestration_normalizes_change_state_from_git_workspace(self):
         result = CodingAgentResult(success=True, final_response="Done.")
-        with patch("app.coding_tasks._git", return_value=" M src/app.py"):
-            normalized = _agent_result_with_change_state(result, Path("/tmp/workspace"))
+        changes = json.dumps({"files": [{"status": "M", "path": "src/app.py", "patch": ""}]})
+        normalized = _agent_result_with_change_state(result, changes)
         self.assertTrue(normalized.success)
         self.assertTrue(normalized.changes_made)
         self.assertEqual(normalized.final_response, "Done.")
@@ -167,7 +167,11 @@ class CodingAgentProviderTest(unittest.TestCase):
         summary = _task_completion_summary("Draft PR opened.", "Implemented the fix and ran focused checks.")
         self.assertIn("Draft PR opened.", summary)
         self.assertIn("ran focused checks", summary)
-        self.assertLessEqual(len(_task_completion_summary("Done.", "x" * 2000)), 1000)
+        from app.coding_agents.interface import MAX_CODING_AGENT_RESPONSE_CHARS
+        self.assertLessEqual(
+            len(_task_completion_summary("Done.", "x" * (MAX_CODING_AGENT_RESPONSE_CHARS + 100))),
+            MAX_CODING_AGENT_RESPONSE_CHARS,
+        )
 
 
 if __name__ == "__main__":

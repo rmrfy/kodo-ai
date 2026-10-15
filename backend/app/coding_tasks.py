@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from . import config
@@ -18,7 +19,11 @@ from .coding_agents.interface import MAX_CODING_AGENT_RESPONSE_CHARS
 from .db import SessionLocal
 from .integrations import github_request, installation_token
 from .maintainer_context import format_context, load_context
-from .models import AgentTask, Repository, WorkSession, WorkSessionPullRequest
+from .models import (AgentTask, AuthIdentity, Installation, Organization, OrganizationMembership, Repository,
+                     WorkSession, WorkSessionPullRequest, Workspace)
+from .services.access import _member_can_access_repo
+from .services.auth import _user_github_request
+from .services.security import _decrypt_token
 
 log = logging.getLogger("kodo.coding_tasks")
 
@@ -161,6 +166,42 @@ def _task_completion_summary(outcome: str, agent_response: str) -> str:
     return summary[:MAX_CODING_AGENT_RESPONSE_CHARS]
 
 
+def _verify_task_requester_github_write(task_data: dict) -> None:
+    """Recheck the requesting user's GitHub identity and write access at execution time."""
+    db = SessionLocal()
+    try:
+        identity = db.scalar(select(AuthIdentity).where(
+            AuthIdentity.user_id == task_data["requester_id"],
+            AuthIdentity.provider == "github",
+        ))
+        if (
+            not identity
+            or identity.provider_user_id != str(task_data["github_user_id"])
+            or not identity.access_token
+        ):
+            raise RuntimeError("The task requester’s GitHub account is no longer connected. Reconnect it and retry.")
+        github_session = {
+            "user_id": task_data["requester_id"],
+            "github_user_id": task_data["github_user_id"],
+            "github_login": identity.provider_username or task_data["github_login"],
+            "token": _decrypt_token(identity.access_token),
+        }
+    finally:
+        db.close()
+
+    try:
+        permission = _user_github_request(
+            github_session,
+            "GET",
+            f"/repos/{task_data['full_name']}/collaborators/{quote(github_session['github_login'], safe='')}/permission",
+        ).get("permission")
+    except (HTTPException, requests.RequestException) as error:
+        log.info("Coding task GitHub permission could not be confirmed: task_id=%s", task_data.get("task_id"))
+        raise RuntimeError("The task requester’s GitHub access could not be confirmed. Reconnect GitHub and retry.") from error
+    if permission not in {"admin", "write", "maintain"}:
+        raise RuntimeError("The task requester no longer has GitHub write access to this repository.")
+
+
 def _git_auth_env(token: str, askpass: Path):
     env = os.environ.copy()
     env.pop("GITHUB_TOKEN", None)
@@ -248,17 +289,49 @@ def process_coding_task(task_id: int) -> bool:
         task = db.get(AgentTask, task_id)
         if not task or task.state in {"complete", "failed"}:
             return True
+        work_session = db.get(WorkSession, task.work_session_id)
+        destination = db.get(WorkSessionPullRequest, task.work_session_pull_request_id)
         repo = db.get(Repository, task.repository_id)
         if not repo:
             raise RuntimeError("Repository is no longer connected")
+        installation = db.get(Installation, repo.installation_id)
+        workspace = db.get(Workspace, repo.workspace_id) if repo.workspace_id else None
+        valid_connection = bool(
+            repo.connected and installation and not installation.suspended and workspace
+            and installation.workspace_id == workspace.id
+        )
+        requester_id = task.user_id or (work_session.user_id if work_session else None)
+        valid_requester = bool(requester_id and work_session and destination)
+        if task.user_id and work_session and work_session.user_id and task.user_id != work_session.user_id:
+            valid_requester = False
+        if work_session and work_session.repository_id != repo.id:
+            valid_requester = False
+        if destination and destination.repository_id != repo.id:
+            valid_requester = False
+        if requester_id and workspace and workspace.kind == "personal":
+            valid_requester = valid_requester and workspace.owner_user_id == requester_id
+        elif requester_id and workspace and workspace.kind == "organization":
+            organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id))
+            member = db.scalar(select(OrganizationMembership).where(
+                OrganizationMembership.organization_id == organization.id if organization else False,
+                OrganizationMembership.user_id == requester_id,
+            )) if organization else None
+            valid_requester = valid_requester and bool(member and member.role in {"owner", "admin", "developer"} and _member_can_access_repo(member, repo.id))
+        if not valid_connection or not valid_requester:
+            task.state = "failed"
+            task.error = "Repository access changed before this task could start."
+            task.progress_stage = ""
+            task.progress_message = ""
+            task.updated_at = datetime.utcnow()
+            db.commit()
+            log.info("Coding task blocked by workspace access check: task_id=%s repository_id=%s", task_id, repo.id)
+            return True
         task.state = "running"
         task.progress_stage = "preparing"
         task.progress_message = "Preparing the repository workspace…"
         task.error = ""
         task.updated_at = datetime.utcnow()
         db.commit()
-        work_session = db.get(WorkSession, task.work_session_id)
-        destination = db.get(WorkSessionPullRequest, task.work_session_pull_request_id)
         if not work_session or not destination:
             raise RuntimeError("The task is missing its session or PR destination")
         if work_session and work_session.status == "paused":
@@ -273,6 +346,10 @@ def process_coding_task(task_id: int) -> bool:
             for item in reversed(prior_tasks)
         )
         task_data = {
+            "task_id": task.id,
+            "requester_id": requester_id,
+            "github_user_id": task.github_user_id,
+            "github_login": task.github_login,
             "instructions": task.instructions,
             "repository_id": task.repository_id,
             "installation_id": repo.installation_id,
@@ -295,6 +372,7 @@ def process_coding_task(task_id: int) -> bool:
     try:
         if not config.CODING_TASKS_ENABLED:
             raise RuntimeError("Coding tasks are disabled by KODO_CODING_TASKS_ENABLED")
+        _verify_task_requester_github_write(task_data)
         provider = get_coding_agent_provider()
         token = installation_token(task_data["installation_id"])
         metadata = github_request("GET", f"/repos/{task_data['full_name']}", token)

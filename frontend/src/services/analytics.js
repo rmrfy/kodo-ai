@@ -43,7 +43,10 @@ export function initializeAnalytics() {
 function normalizedRoutePath(route) {
   if (route.page === 'landing') return '/'
   if (route.page === 'login' || route.page === 'signup') return `/${route.page}`
+  if (route.page === 'verify-email') return '/verify-email'
   if (route.page === 'settings') return '/app/settings'
+  if (route.page === 'github') return '/app/github'
+  if (route.page === 'home') return '/app'
   if (route.page === 'not-found') return '/not-found'
   if (route.page === 'session') {
     return `/app/repos/:repo/sessions/${route.hasSession ? ':session' : 'new'}`

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from .. import ai
 from ..db import SessionLocal
 from ..integrations import github_request, installation_token, pull_files
-from ..models import BookDocument, PullRequest, Repository
+from ..models import BookDocument, Installation, PullRequest, Repository
 from .common import _usage
 
 log = logging.getLogger("kodo.jobs")
@@ -22,8 +22,9 @@ def process_pull_request(repo_id: int, number: int, payload: dict):
     db = SessionLocal()
     try:
         repo = db.get(Repository, repo_id)
-        if not repo or not repo.enabled:
-            log.info("PR review skipped: repository_id=%s enabled=%s pr=%s", repo_id, bool(repo and repo.enabled), number)
+        installation = db.get(Installation, repo.installation_id) if repo else None
+        if not repo or not repo.enabled or not repo.connected or not installation or installation.suspended or installation.workspace_id != repo.workspace_id:
+            log.info("PR review skipped because repository access is inactive: repository_id=%s pr=%s", repo_id, number)
             return True
         pr_data = payload["pull_request"]
         event_sha = (pr_data.get("head") or {}).get("sha", "")

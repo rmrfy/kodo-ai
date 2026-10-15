@@ -13,7 +13,7 @@ from .. import ai, config
 from ..db import SessionLocal
 from ..integrations import github_request, installation_token
 from ..maintainer_context import format_context, load_context
-from ..models import BookDocument, RepoBookSection, Repository
+from ..models import BookDocument, Installation, RepoBookSection, Repository
 from .common import _usage
 
 log = logging.getLogger("kodo.jobs")
@@ -92,7 +92,8 @@ def build_repo_book(repo_id: int, progress_callback=None):
     db = SessionLocal()
     try:
         repo = db.get(Repository, repo_id)
-        if not repo or not repo.enabled:
+        installation = db.get(Installation, repo.installation_id) if repo else None
+        if not repo or not repo.enabled or not repo.connected or not installation or installation.suspended or installation.workspace_id != repo.workspace_id:
             return True
         organization_markdown, repository_markdown = load_context(db, repo.installation_id, repo_id)
         maintainer_context = format_context(organization_markdown, repository_markdown)

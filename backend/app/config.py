@@ -36,3 +36,9 @@ CODING_WORKSPACE_DIR = (
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 GITHUB_OAUTH_REDIRECT_URI = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "http://localhost:8000/auth/callback").strip()
 DISABLE_APP_ROUTES = os.getenv("KODAI_DISABLE_APP_ROUTES", "false").strip().lower() == "true"
+SMTP_HOST = os.getenv("KODO_SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("KODO_SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("KODO_SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("KODO_SMTP_PASSWORD", "")
+EMAIL_FROM = os.getenv("KODO_EMAIL_FROM", "").strip()
+SMTP_STARTTLS = os.getenv("KODO_SMTP_STARTTLS", "true").strip().lower() == "true"

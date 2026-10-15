@@ -1,6 +1,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { buildAppRoute, resolveAppRoute, safeAppDestination } from '../router/index.js'
 import { createApiClient } from '../services/api.js'
+import { takeInitialEmailVerificationToken } from '../services/emailVerification.js'
 
 export function useAppController() {
   const initialRoute = resolveAppRoute()
@@ -11,9 +12,13 @@ export function useAppController() {
   const loading = ref(!['landing', 'not-found'].includes(initialRoute.page))
   const error = ref('')
   const user = ref('')
+  const userId = ref('')
   const userEmail = ref('')
+  const userEmailVerified = ref(false)
   const githubLogin = ref('')
   const organizationName = ref('')
+  const workspaceName = ref('')
+  const workspaceKind = ref('personal')
   const userRole = ref('')
   const userAudience = ref('all')
   const githubConnected = ref(false)
@@ -23,8 +28,11 @@ export function useAppController() {
   const organizationInvites = ref([])
   const organizationRole = ref('')
   const organizations = ref([])
+  const workspaces = ref([])
   const activeOrganizationId = ref('')
+  const activeWorkspaceId = ref('')
   const organizationInviteSending = ref(false)
+  const organizationInviteEmailSent = ref(null)
   const organizationCreating = ref(false)
   const authEmail = ref('')
   const authPassword = ref('')
@@ -32,8 +40,12 @@ export function useAppController() {
   const authMode = ref(initialRoute.page === 'signup' ? 'signup' : 'signin')
   const authNext = ref(initialRoute.next || '')
   const authSubmitting = ref(false)
+  const verificationPending = ref(false)
+  const verificationEmailSent = ref(false)
+  const verificationToken = ref(initialRoute.verificationToken || takeInitialEmailVerificationToken())
   const installations = ref([])
   const availableInstallations = ref([])
+  const transferableRepositories = ref([])
   const installationsLoading = ref(false)
   const connectingInstallationId = ref('')
   const repos = ref([])
@@ -96,6 +108,9 @@ export function useAppController() {
   const knowledgeOnly = computed(() => userRole.value === 'knowledge')
   const sidebarProps = computed(() => ({
     user: user.value,
+    workspaces: workspaces.value,
+    activeWorkspaceId: activeWorkspaceId.value,
+    workspaceKind: workspaceKind.value,
     signedIn: signedIn.value,
     loading: loading.value,
     repos: repos.value,
@@ -103,35 +118,49 @@ export function useAppController() {
     installations: installations.value,
     githubConnected: githubConnected.value,
     role: userRole.value,
-    canManageOrganization: ['owner', 'admin'].includes(organizationRole.value),
+    canManageOrganization: workspaceKind.value === 'organization' && ['owner', 'admin'].includes(organizationRole.value),
+    canManageWorkspace: workspaceKind.value === 'personal' || (workspaceKind.value === 'organization' && ['owner', 'admin'].includes(organizationRole.value)),
     page: page.value,
   }))
   const topBarProps = computed(() => ({
     repository: current.value,
     organizationName: organizationName.value,
+    workspaceName: workspaceName.value,
     signedIn: signedIn.value,
     githubConnected: githubConnected.value,
     page: page.value,
   }))
   const settingsProps = computed(() => ({
     user: user.value,
+    userId: userId.value,
     email: userEmail.value,
     githubLogin: githubLogin.value,
     githubConnected: githubConnected.value,
     emailPasswordConnected: emailPasswordConnected.value,
+    emailVerified: userEmailVerified.value,
+    verificationPending: verificationPending.value,
+    verificationEmailSent: verificationEmailSent.value,
     emailIdentitySaving: emailIdentitySaving.value,
+    githubLinkUrl: githubAuthUrl('/app/settings'),
     canUseDeveloperFeatures: !knowledgeOnly.value,
     members: organizationMembers.value,
     invites: organizationInvites.value,
     organizationRole: organizationRole.value,
     organizations: organizations.value,
+    workspaces: workspaces.value,
+    workspaceKind: workspaceKind.value,
     activeOrganizationId: activeOrganizationId.value,
+    activeWorkspaceId: activeWorkspaceId.value,
     activeOrganizationName: organizationName.value,
-    canManageOrganization: ['owner', 'admin'].includes(organizationRole.value),
+    canManageOrganization: workspaceKind.value === 'organization' && ['owner', 'admin'].includes(organizationRole.value),
+    canTransferOrganizationOwner: workspaceKind.value === 'organization' && organizationRole.value === 'owner',
+    canManageWorkspace: workspaceKind.value === 'personal' || (workspaceKind.value === 'organization' && ['owner', 'admin'].includes(organizationRole.value)),
     creatingOrganization: organizationCreating.value,
     inviteSending: organizationInviteSending.value,
+    inviteEmailSent: organizationInviteEmailSent.value,
     installations: installations.value,
     availableInstallations: availableInstallations.value,
+    transferableRepositories: transferableRepositories.value,
     installationsLoading: installationsLoading.value,
     connectingInstallationId: connectingInstallationId.value,
     repos: repos.value,
@@ -181,9 +210,13 @@ export function useAppController() {
   function clearAuthState() {
     signedIn.value = false
     user.value = ''
+    userId.value = ''
     userEmail.value = ''
+    userEmailVerified.value = false
     githubLogin.value = ''
     organizationName.value = ''
+    workspaceName.value = ''
+    workspaceKind.value = 'personal'
     userRole.value = ''
     userAudience.value = 'all'
     githubConnected.value = false
@@ -192,10 +225,13 @@ export function useAppController() {
     organizationInvites.value = []
     organizationRole.value = ''
     organizations.value = []
+    workspaces.value = []
     activeOrganizationId.value = ''
+    activeWorkspaceId.value = ''
     repos.value = []
     installations.value = []
     availableInstallations.value = []
+    transferableRepositories.value = []
     installationsLoading.value = false
     connectingInstallationId.value = ''
     pulls.value = []
@@ -238,19 +274,22 @@ export function useAppController() {
   async function restoreRouteFromLocation() {
     restoringRoute = true
     const route = routeFromLocation()
-    if (['landing', 'login', 'signup', 'not-found'].includes(route.page)) {
+    if (['landing', 'login', 'signup', 'verify-email', 'not-found'].includes(route.page)) {
       page.value = route.page
       authMode.value = route.page === 'signup' ? 'signup' : 'signin'
       authNext.value = route.next || ''
+      verificationToken.value = route.verificationToken || ''
       await nextTick()
       restoringRoute = false
       return
     }
     authNext.value = ''
     if (sessionWorkspaceId.value !== (route.page === 'session' ? route.sessionId : null)) sessionChanges.value = null
-    selected.value = repos.value.some(repo => repo.id === route.repoId) ? route.repoId : repos.value[0]?.id || null
+    selected.value = repos.value.some(repo => repo.id === route.repoId) ? route.repoId : null
     syncSelectedRepoAccess()
     page.value = route.page
+    if (['dashboard', 'session'].includes(page.value) && !selected.value) page.value = 'home'
+    if (page.value === 'github') selected.value = null
     tab.value = route.tab
     sessionWorkspaceId.value = route.page === 'session' ? route.sessionId : null
     if (knowledgeOnly.value) {
@@ -285,6 +324,10 @@ export function useAppController() {
         page.value = route.page
         authMode.value = route.page === 'signup' ? 'signup' : 'signin'
         authNext.value = route.next || ''
+      } else if (route.page === 'verify-email') {
+        page.value = route.page
+        verificationToken.value = route.verificationToken || ''
+        authNext.value = ''
       } else if (route.requiresAuth) {
         redirectToLogin(requestedAppDestination())
       } else {
@@ -332,16 +375,22 @@ export function useAppController() {
       const invitationResult = await api('/invitations/accept', { method: 'POST', body: JSON.stringify({}) })
       if (invitationResult.accepted) me = await api('/me')
       signedIn.value = true
+      userId.value = me.id || ''
       user.value = me.login
       userEmail.value = me.email || ''
+      userEmailVerified.value = Boolean(me.email_verified)
       githubLogin.value = me.github_login || ''
       organizationName.value = me.organization_name || ''
+      workspaceName.value = me.workspace_name || ''
+      workspaceKind.value = me.workspace_kind || 'personal'
       userRole.value = me.role || ''
-      organizationRole.value = me.role || ''
+      organizationRole.value = workspaceKind.value === 'organization' ? (me.role || '') : ''
       userAudience.value = me.audience || 'all'
       githubConnected.value = Boolean(me.github_connected)
       emailPasswordConnected.value = Boolean(me.email_password_connected)
       activeOrganizationId.value = me.organization_id || ''
+      activeWorkspaceId.value = me.workspace_id || ''
+      workspaces.value = await api('/workspaces')
       organizations.value = await api('/organizations')
       repos.value = await api('/repos')
       const authRoute = routeFromLocation()
@@ -383,26 +432,46 @@ export function useAppController() {
   }
 
   async function loadInstallations() {
-    if (!['owner', 'admin'].includes(organizationRole.value)) { installations.value = []; return }
+    if (!(workspaceKind.value === 'personal' || ['owner', 'admin'].includes(organizationRole.value))) { installations.value = []; return }
     try { installations.value = await api('/installations') }
     catch (err) { error.value = err.message }
   }
 
   async function loadAvailableInstallations() {
-    if (!githubConnected.value || !['owner', 'admin'].includes(organizationRole.value)) { availableInstallations.value = []; return }
+    if (!githubConnected.value || !(workspaceKind.value === 'personal' || ['owner', 'admin'].includes(organizationRole.value))) { availableInstallations.value = []; return }
     installationsLoading.value = true
     try { availableInstallations.value = await api('/installations/available') }
     catch (err) { error.value = err.message }
     finally { installationsLoading.value = false }
   }
 
+  async function loadTransferableRepositories(workspaceId) {
+    transferableRepositories.value = []
+    if (!workspaceId || String(workspaceId) === activeWorkspaceId.value) return
+    try { transferableRepositories.value = await api(`/workspaces/${encodeURIComponent(workspaceId)}/repositories`) }
+    catch (err) { error.value = err.message }
+  }
+
   async function loadSettingsData() {
-    const results = await Promise.allSettled([
+    const tasks = [
       loadInstallations(),
       githubConnected.value ? loadAvailableInstallations() : Promise.resolve(),
-      ['owner', 'admin'].includes(organizationRole.value) ? loadContextFiles() : Promise.resolve(),
-      api('/organization/members').then(data => { organizationMembers.value = data.members; organizationInvites.value = data.invites || []; organizationRole.value = data.role }),
-    ])
+    ]
+    if (workspaceKind.value === 'organization') {
+      if (['owner', 'admin'].includes(organizationRole.value)) tasks.push(loadContextFiles())
+      else { contextFiles.value = { organization: {}, repository: {} }; contextLoaded.value = true }
+      tasks.push(api('/organization/members').then(data => {
+        organizationMembers.value = data.members
+        organizationInvites.value = data.invites || []
+        organizationRole.value = data.role
+      }))
+    } else {
+      organizationMembers.value = []
+      organizationInvites.value = []
+      contextFiles.value = { organization: {}, repository: {} }
+      contextLoaded.value = true
+    }
+    const results = await Promise.allSettled(tasks)
     const failure = results.find(result => result.status === 'rejected')
     if (failure) error.value = failure.reason?.message || 'Could not load organization settings'
   }
@@ -412,11 +481,23 @@ export function useAppController() {
     error.value = ''
     try {
       await api(`/installations/${installationId}/connect`, { method: 'POST' })
-      await Promise.all([loadInstallations(), loadAvailableInstallations(), loadContextFiles()])
+      await Promise.all([loadInstallations(), loadAvailableInstallations(), workspaceKind.value === 'organization' ? loadContextFiles() : Promise.resolve()])
       repos.value = await api('/repos')
       syncSelectedRepoAccess()
     } catch (err) { error.value = err.message }
     finally { connectingInstallationId.value = '' }
+  }
+
+  async function transferRepository({ repositoryId, sourceWorkspaceId, installationId }) {
+    error.value = ''
+    try {
+      await api(`/repos/${repositoryId}/transfer`, { method: 'POST', body: JSON.stringify({
+        source_workspace_id: String(sourceWorkspaceId), installation_id: Number(installationId),
+      }) })
+      transferableRepositories.value = transferableRepositories.value.filter(repo => repo.id !== Number(repositoryId))
+      repos.value = await api('/repos')
+      await loadInstallations()
+    } catch (err) { error.value = err.message }
   }
 
   async function switchOrganization(organizationId) {
@@ -424,6 +505,22 @@ export function useAppController() {
       await api('/organization/activate', { method: 'POST', body: JSON.stringify({ organization_id: String(organizationId) }) })
       await init()
     } catch (err) { error.value = err.message }
+  }
+
+  async function switchWorkspace(workspaceId) {
+    if (!workspaceId || String(workspaceId) === activeWorkspaceId.value) return
+    loading.value = true
+    error.value = ''
+    try {
+      await api('/workspaces/activate', { method: 'POST', body: JSON.stringify({ workspace_id: String(workspaceId) }) })
+      selected.value = null
+      transferableRepositories.value = []
+      page.value = 'home'
+      sessionWorkspaceId.value = null
+      window.history.replaceState({}, '', '/app')
+      await init()
+    } catch (err) { error.value = err.message }
+    finally { loading.value = false }
   }
 
   async function createOrganization({ name, onSuccess }) {
@@ -448,13 +545,24 @@ export function useAppController() {
     } catch (err) { error.value = err.message }
   }
 
+  async function transferOrganizationOwner(newOwnerUserId) {
+    error.value = ''
+    try {
+      await api('/organization/transfer-owner', {
+        method: 'POST', body: JSON.stringify({ new_owner_user_id: String(newOwnerUserId) }),
+      })
+      await init()
+    } catch (err) { error.value = err.message }
+  }
+
   async function linkEmailPassword({ email, password, onSuccess }) {
     emailIdentitySaving.value = true
     error.value = ''
     try {
-      await api('/auth/email/link', { method: 'POST', body: JSON.stringify({ email, password }) })
-      onSuccess?.()
-      await init()
+      const result = await api('/auth/email/link', { method: 'POST', body: JSON.stringify({ email, password }) })
+      verificationPending.value = true
+      verificationEmailSent.value = Boolean(result.email_sent)
+      onSuccess?.(result)
     } catch (err) { error.value = err.message }
     finally { emailIdentitySaving.value = false }
   }
@@ -463,14 +571,41 @@ export function useAppController() {
     authSubmitting.value = true
     error.value = ''
     try {
-      await api('/auth/email', { method: 'POST', body: JSON.stringify({
+      const result = await api('/auth/email', { method: 'POST', body: JSON.stringify({
         mode: authMode.value, name: authName.value, email: authEmail.value, password: authPassword.value,
       }) })
+      if (result.verification_required) {
+        verificationPending.value = true
+        verificationEmailSent.value = Boolean(result.email_sent)
+        return
+      }
       authPassword.value = ''
       authName.value = ''
+      verificationPending.value = false
       await init()
     } catch (err) { error.value = err.message }
     finally { authSubmitting.value = false }
+  }
+
+  async function verifyEmail(token = verificationToken.value) {
+    verificationToken.value = ''
+    error.value = ''
+    if (!token) {
+      error.value = 'Open the verification link from your email to continue.'
+      return
+    }
+    loading.value = true
+    try {
+      await api('/auth/email/verify', { method: 'POST', body: JSON.stringify({ token }) })
+      page.value = 'home'
+      window.history.replaceState({}, '', '/app')
+      await init()
+    } catch (err) {
+      error.value = err.message
+      page.value = 'verify-email'
+    } finally {
+      loading.value = false
+    }
   }
 
   function setAuthField({ name, value }) {
@@ -483,20 +618,23 @@ export function useAppController() {
     authMode.value = mode
     page.value = mode === 'signup' ? 'signup' : 'login'
     error.value = ''
+    verificationPending.value = false
   }
 
-  function githubAuthUrl() {
-    const next = safeAppDestination(authNext.value)
+  function githubAuthUrl(destination = authNext.value) {
+    const next = safeAppDestination(destination)
     return `${API_BASE}/api/auth/github${next ? `?next=${encodeURIComponent(next)}` : ''}`
   }
 
   async function inviteMember({ email, role, audience, repositoryScope, repositoryIds, onSuccess }) {
     error.value = ''
+    organizationInviteEmailSent.value = null
     organizationInviteSending.value = true
     try {
-      await api('/organization/invites', { method: 'POST', body: JSON.stringify({
+      const result = await api('/organization/invites', { method: 'POST', body: JSON.stringify({
         email, role, audience, repository_scope: repositoryScope, repository_ids: repositoryIds,
       }) })
+      organizationInviteEmailSent.value = Boolean(result.email_sent)
       onSuccess?.()
       await loadSettingsData()
     } catch (err) { error.value = err.message }
@@ -784,7 +922,7 @@ export function useAppController() {
   async function loadCurrentRouteData() {
     updatePullPolling()
     updateSessionPolling()
-    if (!signedIn.value || ['landing', 'login', 'signup', 'not-found'].includes(page.value)) return
+    if (!signedIn.value || ['landing', 'login', 'signup', 'verify-email', 'not-found', 'home', 'github'].includes(page.value)) return
     if (page.value === 'settings') {
       await loadSettingsData()
       return
@@ -938,6 +1076,18 @@ export function useAppController() {
     if (unchanged) void loadCurrentRouteData()
   }
 
+  function openWorkspaceHome() {
+    selected.value = null
+    page.value = 'home'
+    sessionWorkspaceId.value = null
+  }
+
+  function openGithubHome() {
+    selected.value = null
+    page.value = 'github'
+    sessionWorkspaceId.value = null
+  }
+
   function openSessionWorkspace(sessionId) {
     sessionWorkspaceId.value = sessionId
     sessionChanges.value = null
@@ -1049,6 +1199,13 @@ export function useAppController() {
       loading.value = false
       return
     }
+    if (initialRoute.page === 'verify-email') {
+      page.value = 'verify-email'
+      loading.value = false
+      if (verificationToken.value) void verifyEmail(verificationToken.value)
+      else error.value = 'Open the one-time verification link from your email to continue.'
+      return
+    }
     if (initialRoute.page === 'not-found' && !initialRoute.requiresAuth) {
       loading.value = false
       return
@@ -1065,9 +1222,11 @@ export function useAppController() {
   return {
     API_BASE, loading, page, signedIn, authMode, error, authName, authEmail, authPassword,
     authSubmitting, githubAuthUrl, setAuthField, switchAuthMode, signInWithEmail,
+    verificationPending, verificationEmailSent, verificationToken, verifyEmail,
     sidebarProps, topBarProps, selectRepository, selected, openSettings, installLink,
-    settingsProps, loadAvailableInstallations, connectGithubInstallation, inviteMember,
-    switchOrganization, createOrganization, renameOrganization, linkEmailPassword,
+    settingsProps, loadAvailableInstallations, loadTransferableRepositories, transferRepository, connectGithubInstallation, inviteMember,
+    switchOrganization, switchWorkspace, openWorkspaceHome, openGithubHome,
+    createOrganization, renameOrganization, transferOrganizationOwner, linkEmailPassword,
     changeMemberRole, removeOrganizationMember, revokeOrganizationInvite, setMode,
     toggleRepo, logout, saveContextFile, current, sessionDetailLoading,
     sessionWorkspaceProps, submitAgentTask, publishWorkSession, renameWorkSession,

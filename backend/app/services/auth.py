@@ -10,9 +10,10 @@ from sqlalchemy import select
 
 from ..db import SessionLocal
 from ..integrations import github_request
-from ..models import AuthIdentity, Organization, OrganizationMembership, User, UserSession
+from ..models import AuthIdentity, Organization, OrganizationMembership, User, UserSession, Workspace
 from .security import _decrypt_token, _encrypt_token, serializer
 from .serialization import _json_list
+from .workspaces import ensure_personal_workspace, user_can_access_workspace, workspace_for_organization
 
 def _session(request: Request) -> dict:
     signed = request.cookies.get("kodo_session")
@@ -30,14 +31,35 @@ def _session(request: Request) -> dict:
         user = db.get(User, record.user_id)
         if not user:
             raise HTTPException(401, "User not found")
-        memberships = db.scalars(select(OrganizationMembership).where(OrganizationMembership.user_id == user.id).order_by(OrganizationMembership.id)).all()
-        membership = next((item for item in memberships if item.organization_id == record.active_organization_id), None)
-        if not membership and memberships:
-            membership = memberships[0]
-            record.active_organization_id = membership.organization_id
+        personal_workspace = ensure_personal_workspace(db, user)
+        workspace = db.get(Workspace, record.active_workspace_id) if record.active_workspace_id else None
+        if workspace and not user_can_access_workspace(db, user.id, workspace):
+            workspace = None
+        if not workspace and record.active_organization_id:
+            workspace = workspace_for_organization(db, record.active_organization_id)
+            if workspace and not user_can_access_workspace(db, user.id, workspace):
+                workspace = None
+        if not workspace:
+            workspace = personal_workspace
+        if record.active_workspace_id != workspace.id:
+            record.active_workspace_id = workspace.id
+        organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id)) if workspace.kind == "organization" else None
+        membership = db.scalar(select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == organization.id,
+            OrganizationMembership.user_id == user.id,
+        )) if organization else None
+        if workspace.kind == "organization" and not membership:
+            # Fail closed if an organization workspace is missing its access link.
+            workspace = personal_workspace
+            record.active_workspace_id = workspace.id
+            record.active_organization_id = None
+            organization = None
+        else:
+            record.active_organization_id = organization.id if organization else None
         identities = db.scalars(select(AuthIdentity).where(AuthIdentity.user_id == user.id)).all()
         identity = next((item for item in identities if item.provider == "github"), None)
-        organization = db.get(Organization, membership.organization_id) if membership else None
+        if db.is_modified(record):
+            db.commit()
         return {
             "id": user.id, "user_id": user.id, "email": user.email,
             "login": user.name or (identity.provider_username if identity else "") or user.email or "kodai user",
@@ -49,9 +71,11 @@ def _session(request: Request) -> dict:
             "github_user_id": int(identity.provider_user_id) if identity and identity.provider_user_id.isdigit() else None,
             "email_password_connected": any(item.provider == "email_password" for item in identities),
             "token": _decrypt_token(identity.access_token) if identity and identity.access_token else "",
-            "session_id": record.id, "organization_id": membership.organization_id if membership else None,
+            "session_id": record.id, "workspace_id": workspace.id,
+            "workspace_kind": workspace.kind, "workspace_name": workspace.name,
+            "organization_id": organization.id if organization else None,
             "organization_name": organization.name if organization else "",
-            "role": membership.role if membership else "",
+            "role": membership.role if membership else ("owner" if workspace.kind == "personal" else ""),
             "audience": membership.audience if membership else "all",
             "repository_scope": membership.repository_scope if membership else "all",
             "repository_ids": _json_list(membership.repository_ids_json) if membership else [],

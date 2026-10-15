@@ -1,6 +1,8 @@
 """Organization, membership, and invitation endpoints."""
 import json
+import logging
 import re
+import smtplib
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -10,13 +12,66 @@ from sqlalchemy import select
 from ..db import SessionLocal
 from ..models import (
     AuthIdentity, Installation, Organization, OrganizationInvite, OrganizationMembership,
-    RepoChatMessage, Repository, User, UserSession,
+    RepoChatMessage, Repository, User, UserSession, Workspace,
 )
 from ..services.auth import _session
 from ..services.access import _organization_admin
 from ..services.serialization import _json_list
+from ..services.email_delivery import send_organization_invite
+from ..services.workspaces import create_organization_workspace, user_can_access_workspace, workspace_for_organization
 
 router = APIRouter()
+log = logging.getLogger("kodo.organizations")
+
+
+@router.get("/api/workspaces")
+async def list_workspaces(request: Request):
+    session = _session(request)
+    db = SessionLocal()
+    try:
+        personal = db.scalars(select(Workspace).where(
+            Workspace.kind == "personal", Workspace.owner_user_id == session["user_id"],
+        )).all()
+        rows = db.execute(select(OrganizationMembership, Organization, Workspace).join(
+            Organization, Organization.id == OrganizationMembership.organization_id,
+        ).join(Workspace, Workspace.id == Organization.workspace_id).where(
+            OrganizationMembership.user_id == session["user_id"], Workspace.kind == "organization",
+        ).order_by(OrganizationMembership.created_at, Organization.name)).all()
+        result = [{"id": item.id, "kind": item.kind, "name": item.name, "role": "owner", "active": item.id == session["workspace_id"]} for item in personal]
+        result.extend({"id": workspace.id, "kind": "organization", "name": organization.name,
+                       "role": member.role, "active": workspace.id == session["workspace_id"]}
+                      for member, organization, workspace in rows)
+        return result
+    finally:
+        db.close()
+
+
+@router.post("/api/workspaces/activate")
+async def activate_workspace(request: Request):
+    session = _session(request)
+    body = await request.json()
+    workspace_id = body.get("workspace_id") if isinstance(body, dict) else None
+    if not isinstance(workspace_id, str):
+        raise HTTPException(422, "Choose a workspace")
+    try:
+        workspace_id = str(UUID(workspace_id))
+    except ValueError:
+        raise HTTPException(422, "Choose a valid workspace")
+    db = SessionLocal()
+    try:
+        workspace = db.get(Workspace, workspace_id)
+        record = db.get(UserSession, session["session_id"])
+        if not workspace or not record or not user_can_access_workspace(db, session["user_id"], workspace):
+            raise HTTPException(404, "Workspace not found")
+        organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id)) if workspace.kind == "organization" else None
+        if workspace.kind == "organization" and not organization:
+            raise HTTPException(404, "Workspace not found")
+        record.active_workspace_id = workspace.id
+        record.active_organization_id = organization.id if organization else None
+        db.commit()
+        return {"workspace_id": workspace.id, "workspace_kind": workspace.kind, "workspace_name": workspace.name}
+    finally:
+        db.close()
 
 @router.get("/api/organizations")
 async def list_organizations(request: Request):
@@ -45,10 +100,9 @@ async def create_organization(request: Request):
         record = db.get(UserSession, session["session_id"])
         if not user_record or not record:
             raise HTTPException(401, "Sign in to continue")
-        organization = Organization(name=name, created_by_user_id=user_record.id)
-        db.add(organization)
-        db.flush()
+        workspace, organization = create_organization_workspace(db, user_record, name)
         db.add(OrganizationMembership(organization_id=organization.id, user_id=user_record.id, role="owner"))
+        record.active_workspace_id = workspace.id
         record.active_organization_id = organization.id
         db.commit()
         return {"id": organization.id, "name": organization.name, "role": "owner", "active": True}
@@ -74,6 +128,10 @@ async def activate_organization(request: Request):
         ))
         if not record or not membership:
             raise HTTPException(404, "Organization not found")
+        workspace = workspace_for_organization(db, organization_id)
+        if not workspace:
+            raise HTTPException(404, "Organization not found")
+        record.active_workspace_id = workspace.id
         record.active_organization_id = organization_id
         db.commit()
         return {"organization_id": organization_id}
@@ -96,8 +154,59 @@ async def rename_organization(request: Request):
         organization = db.get(Organization, member.organization_id)
         organization.name = name
         organization.updated_at = datetime.utcnow()
+        workspace = workspace_for_organization(db, organization.id)
+        if workspace:
+            workspace.name = name
+            workspace.updated_at = datetime.utcnow()
         db.commit()
         return {"id": organization.id, "name": organization.name}
+    finally:
+        db.close()
+
+
+@router.post("/api/organization/transfer-owner")
+async def transfer_organization_owner(request: Request):
+    session = _session(request)
+    body = await request.json()
+    raw_user_id = body.get("new_owner_user_id") if isinstance(body, dict) else None
+    if not isinstance(raw_user_id, str):
+        raise HTTPException(422, "Choose an existing organization member")
+    try:
+        new_owner_id = str(UUID(raw_user_id))
+    except ValueError:
+        raise HTTPException(422, "Choose a valid organization member")
+    db = SessionLocal()
+    try:
+        organization_id = session.get("organization_id")
+        current_owner = db.scalar(select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == organization_id,
+            OrganizationMembership.user_id == session["user_id"],
+        ).with_for_update()) if organization_id else None
+        if not current_owner or current_owner.role != "owner":
+            raise HTTPException(403, "Only the current owner can transfer ownership")
+        if new_owner_id == session["user_id"]:
+            raise HTTPException(422, "Choose another member to become the owner")
+        target = db.scalar(select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == current_owner.organization_id,
+            OrganizationMembership.user_id == new_owner_id,
+        ).with_for_update())
+        if not target:
+            raise HTTPException(404, "Organization member not found")
+        owners = db.scalars(select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == current_owner.organization_id,
+            OrganizationMembership.role == "owner",
+        ).with_for_update()).all()
+        for owner in owners:
+            owner.role = "admin"
+        target.role = "owner"
+        organization = db.get(Organization, current_owner.organization_id)
+        organization.created_by_user_id = new_owner_id
+        organization.updated_at = datetime.utcnow()
+        workspace = workspace_for_organization(db, organization.id)
+        if workspace:
+            workspace.updated_at = datetime.utcnow()
+        db.commit()
+        return {"organization_id": organization.id, "owner_user_id": new_owner_id}
     finally:
         db.close()
 
@@ -110,13 +219,13 @@ async def accept_organization_invitations(request: Request):
         user_session = db.get(UserSession, session["session_id"])
         if not user_record or not user_session:
             raise HTTPException(401, "Sign in to continue")
-        if not user_record.email:
-            return {"accepted": 0}
+        if not user_record.email or not user_record.email_verified_at:
+            return {"accepted": 0, "verification_required": bool(user_record.email)}
         now = datetime.utcnow()
         invites = db.scalars(select(OrganizationInvite).where(
             OrganizationInvite.email == user_record.email,
             OrganizationInvite.accepted_at.is_(None), OrganizationInvite.expires_at > now,
-        ).order_by(OrganizationInvite.created_at, OrganizationInvite.id)).all()
+        ).order_by(OrganizationInvite.created_at, OrganizationInvite.id).with_for_update()).all()
         accepted = 0
         for invite in invites:
             member = db.scalar(select(OrganizationMembership).where(
@@ -132,6 +241,8 @@ async def accept_organization_invitations(request: Request):
             invite.accepted_at = now
             accepted += 1
         if accepted:
+            workspace = workspace_for_organization(db, invites[0].organization_id)
+            user_session.active_workspace_id = workspace.id if workspace else None
             user_session.active_organization_id = invites[0].organization_id
             db.commit()
         return {"accepted": accepted}
@@ -238,7 +349,12 @@ async def invite_organization_member(request: Request):
             invite.invited_by_user_id = session["user_id"]
             invite.expires_at = datetime.utcnow() + timedelta(days=7)
         db.commit()
-        return {"ok": True, "email": email, "role": role}
+        try:
+            email_sent = send_organization_invite(email, organization.name, session.get("name") or session.get("login") or "Your teammate", invite.expires_at, invite.id)
+        except (OSError, smtplib.SMTPException):
+            log.exception("Organization invitation email delivery failed")
+            email_sent = False
+        return {"ok": True, "email": email, "role": role, "email_sent": email_sent}
     finally:
         db.close()
 

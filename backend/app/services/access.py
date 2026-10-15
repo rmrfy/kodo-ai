@@ -12,7 +12,7 @@ from .. import config
 from ..integrations import github_request, installation_token
 from ..models import (
     AgentTask, BookDocument, Installation, OrganizationMembership, PullRequest,
-    RepoBookSection, RepoChatMessage, Repository, UsageRecord, WorkSession,
+    RepoBookSection, RepoChatMessage, Repository, UsageRecord, WorkSession, Workspace, Organization,
 )
 from .auth import _user_github_request
 from .serialization import _json_list
@@ -20,10 +20,20 @@ from .serialization import _json_list
 log = logging.getLogger("kodo.access")
 
 def _sync_installation_repositories(db, installation: Installation) -> int:
-    """Refresh repositories only for an installation explicitly linked to a kodai org."""
-    if (installation.account_type or "").casefold() != "organization" or not installation.organization_id:
+    """Refresh repositories only from an installation explicitly linked to a Kodai workspace."""
+    workspace = db.get(Workspace, installation.workspace_id) if installation.workspace_id else None
+    if not workspace or installation.suspended:
         return 0
-    if installation.suspended:
+    if workspace.kind == "personal":
+        if (installation.account_type or "").casefold() != "user" or not workspace.owner_user_id:
+            return 0
+        organization_id = None
+    elif workspace.kind == "organization":
+        organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id))
+        if (installation.account_type or "").casefold() != "organization" or not organization or installation.organization_id != organization.id:
+            return 0
+        organization_id = organization.id
+    else:
         return 0
 
     token = installation_token(installation.id)
@@ -37,37 +47,33 @@ def _sync_installation_repositories(db, installation: Installation) -> int:
         for repo in batch:
             visible.add(repo["id"])
             saved = db.get(Repository, repo["id"])
-            if saved and saved.organization_id and saved.organization_id != installation.organization_id:
-                raise HTTPException(
-                    409,
-                    f"Repository {repo['full_name']} is already linked to another kodai organization.",
-                )
+            if saved and saved.workspace_id and saved.workspace_id != workspace.id:
+                # A GitHub repository may be installed in more than one account.
+                # Its Kodai history stays with its one explicitly selected workspace.
+                log.info("Skipping repository already connected to another Kodai workspace: repo_id=%s", repo["id"])
+                continue
             if saved:
                 saved.installation_id = installation.id
                 saved.full_name = repo["full_name"]
                 saved.private = repo.get("private", True)
-                saved.organization_id = installation.organization_id
+                saved.organization_id = organization_id
+                saved.workspace_id = workspace.id
+                saved.connected = True
             else:
                 db.add(Repository(
                     id=repo["id"], installation_id=installation.id,
                     full_name=repo["full_name"], private=repo.get("private", True),
-                    organization_id=installation.organization_id,
+                    organization_id=organization_id, workspace_id=workspace.id,
+                    connected=True,
                 ))
         if len(batch) < 100:
             break
 
     stale = db.scalars(select(Repository).where(Repository.installation_id == installation.id)).all()
     for repo in stale:
-        if repo.id not in visible:
-            _remove_coding_workspaces(db, [repo.id])
-            db.query(PullRequest).filter(PullRequest.repository_id == repo.id).delete()
-            db.query(BookDocument).filter(BookDocument.repository_id == repo.id).delete()
-            db.query(RepoBookSection).filter(RepoBookSection.repository_id == repo.id).delete()
-            db.query(RepoChatMessage).filter(RepoChatMessage.repository_id == repo.id).delete()
-            db.query(AgentTask).filter(AgentTask.repository_id == repo.id).delete()
-            db.query(WorkSession).filter(WorkSession.repository_id == repo.id).delete()
-            db.query(UsageRecord).filter(UsageRecord.repository_id == repo.id).delete()
-            db.delete(repo)
+        if repo.id not in visible and repo.workspace_id == workspace.id:
+            # Unlinking GitHub access must not erase Kodai task, Handbook, or chat history.
+            repo.connected = False
     return len(visible)
 
 def _sync_organization_repositories(db, organization_id: str) -> None:
@@ -78,12 +84,28 @@ def _sync_organization_repositories(db, organization_id: str) -> None:
     for installation in installations:
         _sync_installation_repositories(db, installation)
 
+
+def _sync_workspace_repositories(db, workspace_id: str) -> None:
+    installations = db.scalars(select(Installation).where(Installation.workspace_id == workspace_id)).all()
+    for installation in installations:
+        _sync_installation_repositories(db, installation)
+
 def _authorized_repo(db, repo_id: int, session: dict, access: str = "developer") -> Repository:
     repo = db.get(Repository, repo_id)
-    if not repo or not repo.organization_id or repo.organization_id != session.get("organization_id"):
+    if not repo or not repo.connected or not repo.workspace_id or repo.workspace_id != session.get("workspace_id"):
         raise HTTPException(404, "Repository not found")
+    workspace = db.get(Workspace, repo.workspace_id)
     installation = db.get(Installation, repo.installation_id)
-    if not installation or (installation.account_type or "").casefold() != "organization" or installation.organization_id != repo.organization_id:
+    if not workspace or not installation or installation.suspended or installation.workspace_id != workspace.id:
+        raise HTTPException(404, "Repository not found")
+    if workspace.kind == "personal":
+        if workspace.owner_user_id != session["user_id"] or (installation.account_type or "").casefold() != "user" or repo.organization_id:
+            raise HTTPException(404, "Repository not found")
+        return repo
+    if workspace.kind != "organization" or not repo.organization_id:
+        raise HTTPException(404, "Repository not found")
+    organization = db.get(Organization, repo.organization_id)
+    if not organization or organization.workspace_id != workspace.id or installation.organization_id != organization.id or (installation.account_type or "").casefold() != "organization":
         raise HTTPException(404, "Repository not found")
     membership = db.scalar(select(OrganizationMembership).where(
         OrganizationMembership.organization_id == repo.organization_id,
@@ -100,6 +122,9 @@ def _authorized_repo(db, repo_id: int, session: dict, access: str = "developer")
     return repo
 
 def _repo_member(db, repo: Repository, user_id: str) -> OrganizationMembership | None:
+    workspace = db.get(Workspace, repo.workspace_id) if repo.workspace_id else None
+    if workspace and workspace.kind == "personal" and workspace.owner_user_id == user_id:
+        return None
     return db.scalar(select(OrganizationMembership).where(
         OrganizationMembership.organization_id == repo.organization_id,
         OrganizationMembership.user_id == user_id,
@@ -114,6 +139,9 @@ def _member_can_access_repo(member: OrganizationMembership, repo_id: int) -> boo
         return False
 
 def _require_repo_admin(db, repo: Repository, user_id: str):
+    workspace = db.get(Workspace, repo.workspace_id) if repo.workspace_id else None
+    if workspace and workspace.kind == "personal" and workspace.owner_user_id == user_id:
+        return type("PersonalWorkspaceAccess", (), {"role": "owner", "audience": "all", "repository_scope": "all"})()
     member = _repo_member(db, repo, user_id)
     if not member or member.role not in {"owner", "admin"}:
         raise HTTPException(403, "Organization owner or admin access is required")
