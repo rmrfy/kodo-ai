@@ -11,11 +11,9 @@ from sqlalchemy import select
 from .. import config
 from ..db import SessionLocal
 from ..models import (
-    AgentTask, BookDocument, Installation, PullRequest, RepoBookSection,
-    RepoChatMessage, Repository, UsageRecord, WebhookDelivery, WorkSession,
-    WorkSessionPullRequest,
+    BookDocument, Installation, Organization, PullRequest, RepoBookSection,
+    Repository, WebhookDelivery, WorkSessionPullRequest, Workspace,
 )
-from ..services.access import _remove_coding_workspaces
 from ..services.job_queue import _queue_job
 
 router = APIRouter()
@@ -47,20 +45,10 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
             action = payload.get("action")
             if action == "suspend":
                 db.query(Installation).filter(Installation.id == install.get("id")).update({"suspended": True})
-                db.query(Repository).filter(Repository.installation_id == install.get("id")).update({"enabled": False})
+                db.query(Repository).filter(Repository.installation_id == install.get("id")).update({"connected": False})
             elif action == "deleted":
-                install_repos = db.scalars(select(Repository.id).where(Repository.installation_id == install.get("id"))).all()
-                if install_repos:
-                    _remove_coding_workspaces(db, install_repos)
-                    db.query(PullRequest).filter(PullRequest.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                    db.query(BookDocument).filter(BookDocument.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                    db.query(RepoBookSection).filter(RepoBookSection.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                    db.query(RepoChatMessage).filter(RepoChatMessage.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                    db.query(AgentTask).filter(AgentTask.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                    db.query(WorkSession).filter(WorkSession.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                    db.query(UsageRecord).filter(UsageRecord.repository_id.in_(install_repos)).delete(synchronize_session=False)
-                db.query(Repository).filter(Repository.installation_id == install.get("id")).delete()
-                db.query(Installation).filter(Installation.id == install.get("id")).delete()
+                db.query(Repository).filter(Repository.installation_id == install.get("id")).update({"connected": False})
+                db.query(Installation).filter(Installation.id == install.get("id")).update({"suspended": True})
             elif action in {"created", "unsuspend", "new_permissions_accepted"}:
                 account = install.get("account") or {}
                 saved_installation = db.get(Installation, install["id"])
@@ -89,16 +77,42 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                 )
                 db.add(installation)
                 db.flush()
-            mapped_org_id = (
-                installation.organization_id
-                if installation and (installation.account_type or "").casefold() == "organization"
-                else None
-            )
+            mapped_workspace_id = installation.workspace_id if installation else None
+            mapped_org_id = None
+            workspace = db.get(Workspace, mapped_workspace_id) if mapped_workspace_id else None
+            if workspace and workspace.kind == "personal":
+                if (
+                    (installation.account_type or "").casefold() != "user"
+                    or not workspace.owner_user_id
+                    or installation.organization_id
+                ):
+                    mapped_workspace_id = None
+                    workspace = None
+            elif workspace and workspace.kind == "organization":
+                organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id))
+                if (
+                    (installation.account_type or "").casefold() != "organization"
+                    or not organization
+                    or installation.organization_id != organization.id
+                ):
+                    mapped_workspace_id = None
+                    workspace = None
+                else:
+                    mapped_org_id = organization.id
+            else:
+                mapped_workspace_id = None
+                workspace = None
             for r in payload.get("repositories_added", []):
+                if not mapped_workspace_id:
+                    log.info(
+                        "GitHub repository addition ignored because the installation is not linked to a Kodai workspace: repo_id=%s installation_id=%s",
+                        r.get("id"), install_id,
+                    )
+                    continue
                 saved_repo = db.get(Repository, r["id"])
-                if saved_repo and saved_repo.organization_id and mapped_org_id and saved_repo.organization_id != mapped_org_id:
+                if saved_repo and saved_repo.workspace_id and saved_repo.workspace_id != mapped_workspace_id:
                     log.warning(
-                        "GitHub repository addition skipped because it is linked to another kodai organization: repo_id=%s installation_id=%s",
+                        "GitHub repository addition skipped because it is connected to another Kodai workspace: repo_id=%s installation_id=%s",
                         r["id"], install_id,
                     )
                     continue
@@ -109,17 +123,11 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                 saved_repo.full_name = r["full_name"]
                 saved_repo.private = r.get("private", True)
                 saved_repo.enabled = True
+                saved_repo.workspace_id = mapped_workspace_id
                 saved_repo.organization_id = mapped_org_id
+                saved_repo.connected = True
             for r in payload.get("repositories_removed", []):
-                _remove_coding_workspaces(db, [r["id"]])
-                db.query(Repository).filter(Repository.id == r["id"]).delete()
-                db.query(PullRequest).filter(PullRequest.repository_id == r["id"]).delete()
-                db.query(BookDocument).filter(BookDocument.repository_id == r["id"]).delete()
-                db.query(RepoBookSection).filter(RepoBookSection.repository_id == r["id"]).delete()
-                db.query(RepoChatMessage).filter(RepoChatMessage.repository_id == r["id"]).delete()
-                db.query(AgentTask).filter(AgentTask.repository_id == r["id"]).delete()
-                db.query(WorkSession).filter(WorkSession.repository_id == r["id"]).delete()
-                db.query(UsageRecord).filter(UsageRecord.repository_id == r["id"]).delete()
+                db.query(Repository).filter(Repository.id == r["id"], Repository.installation_id == install_id).update({"connected": False})
         elif event == "pull_request":
             pr = payload.get("pull_request", {})
             log.info("Pull request webhook: action=%s repo_id=%s pr=%s draft=%s", payload.get("action"), (payload.get("repository") or {}).get("id"), pr.get("number"), bool(pr.get("draft", False)))
@@ -136,7 +144,7 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
                     log.info("Pull request closed: repo=%s pr=%s", repo.full_name, pr.get("number"))
             elif payload.get("action") in {"opened", "reopened", "synchronize", "ready_for_review"} and not pr.get("draft", False):
                 repo = db.get(Repository, payload.get("repository", {}).get("id"))
-                if repo and repo.enabled:
+                if repo and repo.enabled and repo.connected:
                     head_sha = (pr.get("head") or {}).get("sha", "unknown")
                     action = payload.get("action", "unknown")
                     saved = db.scalar(select(PullRequest).where(PullRequest.repository_id == repo.id, PullRequest.number == pr["number"]))
@@ -159,7 +167,7 @@ async def github_webhook(request: Request, tasks: BackgroundTasks):
         elif event == "push":
             repo_data = payload.get("repository", {})
             repo = db.get(Repository, repo_data.get("id"))
-            if repo:
+            if repo and repo.connected:
                 db.query(BookDocument).filter(BookDocument.repository_id == repo.id).update({"stale": True})
                 db.query(RepoBookSection).filter(RepoBookSection.repository_id == repo.id).update({"stale": True})
                 if repo.enabled:

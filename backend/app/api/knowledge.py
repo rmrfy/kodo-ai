@@ -62,7 +62,7 @@ async def repo_book(repo_id: int, request: Request):
     try:
         repo = _authorized_repo(db, repo_id, session, access="knowledge")
         member = _repo_member(db, repo, session["user_id"])
-        knowledge_only = member.role == "knowledge"
+        knowledge_only = bool(member and member.role == "knowledge")
         docs_query = (
             select(BookDocument).where(BookDocument.repository_id == repo_id).order_by(BookDocument.kind, BookDocument.path)
             if not knowledge_only
@@ -94,7 +94,7 @@ async def repo_chat_history(repo_id: int, request: Request):
     try:
         repo = _authorized_repo(db, repo_id, session, access="knowledge")
         member = _repo_member(db, repo, session["user_id"])
-        knowledge_only = member.role == "knowledge"
+        knowledge_only = bool(member and member.role == "knowledge")
         docs = [] if knowledge_only else db.scalars(select(BookDocument).where(BookDocument.repository_id == repo_id, BookDocument.kind != "manifest")).all()
         sections = db.scalars(select(RepoBookSection).where(RepoBookSection.repository_id == repo_id)).all()
         if knowledge_only:
@@ -123,7 +123,7 @@ async def ask_repo_chat(repo_id: int, request: Request):
     try:
         repo = _authorized_repo(db, repo_id, session, access="knowledge")
         member = _repo_member(db, repo, session["user_id"])
-        knowledge_only = member.role == "knowledge"
+        knowledge_only = bool(member and member.role == "knowledge")
         maintainer_context = "" if knowledge_only else format_context(*load_context(db, repo.installation_id, repo_id))
         documents = [] if knowledge_only else db.scalars(select(BookDocument).where(BookDocument.repository_id == repo_id, BookDocument.kind != "manifest").order_by(BookDocument.kind, BookDocument.path)).all()
         sections = db.scalars(select(RepoBookSection).where(RepoBookSection.repository_id == repo_id).order_by(RepoBookSection.slug)).all()
@@ -241,17 +241,34 @@ async def book_rebuild_status(repo_id: int, job_id: int, request: Request):
 async def usage(request: Request):
     session = _session(request); db = SessionLocal()
     try:
-        memberships = db.scalars(select(OrganizationMembership).where(
-            OrganizationMembership.user_id == session["user_id"], OrganizationMembership.organization_id == session.get("organization_id"),
-            OrganizationMembership.role.in_(["owner", "admin", "developer"]),
-        )).all()
-        repo_ids = [repo_id for membership in memberships for repo_id in db.scalars(
-            select(Repository.id).join(Installation, Installation.id == Repository.installation_id).where(
-                Repository.organization_id == membership.organization_id,
-                Installation.organization_id == membership.organization_id,
+        if session.get("workspace_kind") == "personal":
+            repo_ids = db.scalars(select(Repository.id).join(
+                Installation, Installation.id == Repository.installation_id,
+            ).where(
+                Repository.workspace_id == session["workspace_id"], Repository.connected.is_(True),
+                Installation.workspace_id == session["workspace_id"],
+                Installation.suspended.is_(False),
+                Installation.account_type.ilike("user"),
+                Repository.organization_id.is_(None),
+            )).all()
+        else:
+            membership = db.scalar(select(OrganizationMembership).where(
+                OrganizationMembership.user_id == session["user_id"],
+                OrganizationMembership.organization_id == session.get("organization_id"),
+                OrganizationMembership.role.in_(["owner", "admin", "developer"]),
+            ))
+            repo_ids = db.scalars(select(Repository.id).join(
+                Installation, Installation.id == Repository.installation_id,
+            ).where(
+                Repository.workspace_id == session.get("workspace_id"),
+                Repository.organization_id == session.get("organization_id"),
+                Repository.connected.is_(True),
+                Installation.workspace_id == session.get("workspace_id"),
+                Installation.suspended.is_(False),
+                Installation.organization_id == session.get("organization_id"),
                 Installation.account_type.ilike("organization"),
-            )
-        ).all() if _member_can_access_repo(membership, repo_id)]
+            )).all() if membership else []
+            repo_ids = [repo_id for repo_id in repo_ids if _member_can_access_repo(membership, repo_id)]
         if not repo_ids:
             return []
         rows = db.execute(select(UsageRecord.task, UsageRecord.model, func.sum(UsageRecord.input_tokens), func.sum(UsageRecord.output_tokens), func.sum(UsageRecord.estimated_cost_usd)).where(UsageRecord.repository_id.in_(repo_ids)).group_by(UsageRecord.task, UsageRecord.model)).all()

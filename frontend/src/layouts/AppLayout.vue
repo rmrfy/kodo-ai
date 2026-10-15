@@ -11,7 +11,7 @@ defineProps({
   topBarProps: { type: Object, default: () => ({}) },
 })
 
-const emit = defineEmits(['dismiss-error', 'select-repository', 'home', 'settings', 'connect'])
+const emit = defineEmits(['dismiss-error', 'select-repository', 'home', 'github', 'switch-workspace', 'settings', 'connect'])
 </script>
 
 <template>
@@ -21,6 +21,8 @@ const emit = defineEmits(['dismiss-error', 'select-repository', 'home', 'setting
       v-bind="sidebarProps"
       @select="emit('select-repository', $event)"
       @home="emit('home')"
+      @github="emit('github')"
+      @switch-workspace="emit('switch-workspace', $event)"
       @settings="emit('settings')"
       @connect="emit('connect')"
     />

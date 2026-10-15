@@ -20,6 +20,7 @@ function routeDefaults(overrides = {}) {
     chapter: '',
     filter: 'all',
     next: '',
+    verificationToken: '',
     requiresAuth: false,
     ...overrides,
   }
@@ -42,9 +43,17 @@ export function resolveAppRoute(href = typeof window === 'undefined' ? 'http://l
   if (parts.length === 1 && parts[0] === 'signup') {
     return routeDefaults({ page: 'signup', next: safeAppDestination(url.searchParams.get('next')) })
   }
+  if (parts.length === 1 && parts[0] === 'verify-email') {
+    const fragment = new URLSearchParams(url.hash.slice(1))
+    return routeDefaults({ page: 'verify-email', verificationToken: fragment.get('token') || url.searchParams.get('token') || '' })
+  }
 
   if (parts[0] !== 'app') return routeDefaults()
-  if (parts.length === 1) return routeDefaults({ page: 'dashboard', requiresAuth: true })
+  if (parts.length === 1) return routeDefaults({ page: 'home', requiresAuth: true })
+
+  if (parts.length === 2 && parts[1] === 'github') {
+    return routeDefaults({ page: 'github', requiresAuth: true })
+  }
 
   if (parts.length === 2 && parts[1] === 'settings') {
     return routeDefaults({ page: 'settings', requiresAuth: true })
@@ -95,8 +104,11 @@ export function buildAppRoute(state, href = window.location.href) {
     return path + url.search + url.hash
   }
   if (state.page === 'landing') return '/'
+  if (state.page === 'verify-email') return '/verify-email'
   if (state.page === 'not-found') return `${url.pathname}${url.search}${url.hash}`
   if (state.page === 'settings') return '/app/settings'
+  if (state.page === 'home') return '/app'
+  if (state.page === 'github') return '/app/github'
 
   if (state.repoId && state.page === 'session') {
     path = state.sessionId

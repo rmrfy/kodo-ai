@@ -1,6 +1,6 @@
 from datetime import datetime
 from uuid import uuid4
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -11,6 +11,7 @@ class Installation(Base):
     account_type: Mapped[str] = mapped_column(String(32), default="User")
     suspended: Mapped[bool] = mapped_column(Boolean, default=False)
     organization_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Repository(Base):
@@ -20,8 +21,10 @@ class Repository(Base):
     full_name: Mapped[str] = mapped_column(String(255), index=True)
     private: Mapped[bool] = mapped_column(Boolean, default=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    connected: Mapped[bool] = mapped_column(Boolean, default=True)
     review_mode: Mapped[str] = mapped_column(String(32), default="standard")
     organization_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
 
 class ContextFile(Base):
     """Maintainer-authored Markdown guidance for an installation or repository."""
@@ -189,6 +192,7 @@ class UserSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     user_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     active_organization_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
+    active_workspace_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
 
 
 class User(Base):
@@ -234,8 +238,42 @@ class Organization(Base):
     id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255))
     created_by_user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    workspace_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("workspaces.id", ondelete="RESTRICT"), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Workspace(Base):
+    """A personal or organization-owned Kodai resource boundary."""
+    __tablename__ = "workspaces"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "kind", name="uq_workspace_owner_kind"),
+        CheckConstraint(
+            "(kind = 'personal' AND owner_user_id IS NOT NULL) OR "
+            "(kind = 'organization' AND owner_user_id IS NULL)",
+            name="ck_workspace_owner_matches_kind",
+        ),
+    )
+    id: Mapped[str] = mapped_column(Uuid(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    kind: Mapped[str] = mapped_column(String(24))  # personal or organization
+    name: Mapped[str] = mapped_column(String(255))
+    owner_user_id: Mapped[str | None] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EmailVerification(Base):
+    """Short-lived, single-use proof of email ownership or account email linking."""
+    __tablename__ = "email_verifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    purpose: Mapped[str] = mapped_column(String(24))  # signup or link_email
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class OrganizationMembership(Base):

@@ -1,10 +1,12 @@
 """Authentication endpoints and GitHub OAuth callbacks."""
 import hmac
+import hashlib
 import logging
 import os
 import re
 import requests
 import secrets
+import smtplib
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -16,15 +18,56 @@ from sqlalchemy import select
 from .. import config
 from ..db import SessionLocal
 from ..integrations import github_request
-from ..models import AuthIdentity, Organization, OrganizationInvite, OrganizationMembership, User, UserSession
+from ..models import AuthIdentity, EmailVerification, Organization, OrganizationInvite, OrganizationMembership, User, UserSession, Workspace
 from ..services.auth import _session
 from ..services.security import (
     _cookie_secure, _encrypt_token, _hash_password, _safe_app_return_path,
     _verify_password, serializer,
 )
+from ..services.email_delivery import send_verification_email
+from ..services.workspaces import ensure_personal_workspace, workspace_for_organization
 
 router = APIRouter()
 log = logging.getLogger("kodo.auth")
+
+
+def _accept_verified_invites(db, user_record: User, now: datetime):
+    if not user_record.email or not user_record.email_verified_at:
+        return []
+    invites = db.scalars(select(OrganizationInvite).where(
+        OrganizationInvite.email == user_record.email,
+        OrganizationInvite.accepted_at.is_(None),
+        OrganizationInvite.expires_at > now,
+    ).order_by(OrganizationInvite.created_at, OrganizationInvite.id).with_for_update()).all()
+    for invite in invites:
+        member = db.scalar(select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == invite.organization_id,
+            OrganizationMembership.user_id == user_record.id,
+        ))
+        if not member:
+            db.add(OrganizationMembership(
+                organization_id=invite.organization_id, user_id=user_record.id, role=invite.role,
+                audience=invite.audience, repository_scope=invite.repository_scope,
+                repository_ids_json=invite.repository_ids_json or "[]",
+            ))
+        invite.accepted_at = now
+    return invites
+
+
+def _create_email_verification(db, user: User, email: str, purpose: str, password_hash: str | None = None):
+    db.query(EmailVerification).filter(
+        EmailVerification.user_id == user.id,
+        EmailVerification.purpose == purpose,
+        EmailVerification.consumed_at.is_(None),
+    ).delete(synchronize_session=False)
+    token = secrets.token_urlsafe(32)
+    db.add(EmailVerification(
+        user_id=user.id, email=email, purpose=purpose,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(), password_hash=password_hash,
+        expires_at=datetime.utcnow() + timedelta(minutes=30),
+    ))
+    return token
+
 
 @router.get("/api/auth/github")
 async def auth_start(request: Request):
@@ -138,35 +181,11 @@ async def auth_callback(code: str, state: str, request: Request):
                     user_record.email = primary_email
                     user_record.email_verified_at = now
 
-        pending_invites = []
-        if user_record.email:
-            pending_invites = db.scalars(select(OrganizationInvite).where(
-                OrganizationInvite.email == user_record.email,
-                OrganizationInvite.accepted_at.is_(None),
-                OrganizationInvite.expires_at > now,
-            )).all()
-            for invite in pending_invites:
-                member = db.scalar(select(OrganizationMembership).where(
-                    OrganizationMembership.organization_id == invite.organization_id,
-                    OrganizationMembership.user_id == user_record.id,
-                ))
-                if not member:
-                    db.add(OrganizationMembership(
-                        organization_id=invite.organization_id, user_id=user_record.id, role=invite.role,
-                        audience=invite.audience, repository_scope=invite.repository_scope,
-                        repository_ids_json=invite.repository_ids_json or "[]",
-                    ))
-                invite.accepted_at = now
-
+        personal_workspace = ensure_personal_workspace(db, user_record)
+        pending_invites = _accept_verified_invites(db, user_record, now)
         memberships = db.scalars(select(OrganizationMembership).where(
             OrganizationMembership.user_id == user_record.id,
         ).order_by(OrganizationMembership.id)).all()
-        if not memberships and not pending_invites:
-            organization = Organization(name=f"{user_record.name or user['login']}'s organization", created_by_user_id=user_record.id)
-            db.add(organization)
-            db.flush()
-            memberships = [OrganizationMembership(organization_id=organization.id, user_id=user_record.id, role="owner")]
-            db.add(memberships[0])
 
         identity = db.scalar(select(AuthIdentity).where(
             AuthIdentity.user_id == user_record.id, AuthIdentity.provider == "github",
@@ -190,9 +209,22 @@ async def auth_callback(code: str, state: str, request: Request):
         target_session.user_id = user_record.id
         target_session.expires_at = now + timedelta(days=7)
         if pending_invites:
-            target_session.active_organization_id = pending_invites[0].organization_id
-        elif not any(item.organization_id == target_session.active_organization_id for item in memberships):
-            target_session.active_organization_id = memberships[0].organization_id if memberships else None
+            active_workspace = workspace_for_organization(db, pending_invites[0].organization_id)
+        else:
+            active_workspace = db.get(Workspace, target_session.active_workspace_id) if target_session.active_workspace_id else None
+            if active_workspace and active_workspace.kind == "organization":
+                member = db.scalar(select(OrganizationMembership.id).where(
+                    OrganizationMembership.organization_id == select(Organization.id).where(Organization.workspace_id == active_workspace.id).scalar_subquery(),
+                    OrganizationMembership.user_id == user_record.id,
+                ))
+                if not member:
+                    active_workspace = None
+            elif active_workspace and active_workspace.kind == "personal" and active_workspace.owner_user_id != user_record.id:
+                active_workspace = None
+            active_workspace = active_workspace or personal_workspace
+        target_session.active_workspace_id = active_workspace.id if active_workspace else personal_workspace.id
+        active_org = db.scalar(select(Organization).where(Organization.workspace_id == target_session.active_workspace_id))
+        target_session.active_organization_id = active_org.id if active_org else None
         if not existing_session:
             db.add(target_session)
         db.commit()
@@ -231,6 +263,8 @@ async def me(request: Request):
         "email_password_connected": session["email_password_connected"],
         "role": session["role"], "audience": session["audience"],
         "organization_id": session["organization_id"], "organization_name": session["organization_name"],
+        "workspace_id": session["workspace_id"], "workspace_kind": session["workspace_kind"],
+        "workspace_name": session["workspace_name"],
     }
 
 @router.post("/api/auth/email")
@@ -252,64 +286,134 @@ async def sign_in_with_email(request: Request, response: Response):
         raise HTTPException(422, "Password must be between 12 and 1024 characters")
     db = SessionLocal()
     try:
-        pending_invites = db.scalars(select(OrganizationInvite).where(
-            OrganizationInvite.email == email, OrganizationInvite.accepted_at.is_(None), OrganizationInvite.expires_at > datetime.utcnow(),
-        )).all()
         user_record = db.scalar(select(User).where(User.email == email))
         identity = db.scalar(select(AuthIdentity).where(
             AuthIdentity.provider == "email_password", AuthIdentity.provider_user_id == email,
         ))
-        if mode == "signup" and identity:
-            raise HTTPException(409, "An email and password account already exists for this email. Sign in instead.")
-        if mode == "signup" and user_record:
-            raise HTTPException(409, "A kodai account already uses this email. Sign in with its existing method or connect email sign-in from Settings.")
-        if mode == "signin" and (not identity or not user_record or identity.user_id != user_record.id):
-            raise HTTPException(401, "No email and password account was found. Create an account or sign in with GitHub.")
+        now = datetime.utcnow()
         if mode == "signup":
-            user_record = User(email=email, name=name or email.split("@", 1)[0], last_login_at=datetime.utcnow())
-            db.add(user_record)
-            db.flush()
-            identity = AuthIdentity(
-                user_id=user_record.id, provider="email_password", provider_user_id=email,
-                password_hash=_hash_password(password),
-            )
-            db.add(identity)
-        else:
-            if not _verify_password(password, identity.password_hash or ""):
-                raise HTTPException(401, "Invalid email or password")
-        user_record.last_login_at = datetime.utcnow()
-        memberships = db.scalars(select(OrganizationMembership).where(
-            OrganizationMembership.user_id == user_record.id,
-        ).order_by(OrganizationMembership.id)).all()
-        if not memberships and not pending_invites:
-            organization = Organization(name=f"{user_record.name or email.split('@', 1)[0]}'s organization", created_by_user_id=user_record.id)
-            db.add(organization)
-            db.flush()
-            membership = OrganizationMembership(organization_id=organization.id, user_id=user_record.id, role="owner")
-            db.add(membership)
-            memberships.append(membership)
-        for invite in pending_invites:
-            member = db.scalar(select(OrganizationMembership).where(
-                OrganizationMembership.organization_id == invite.organization_id, OrganizationMembership.user_id == user_record.id,
-            ))
-            if not member:
-                member = OrganizationMembership(
-                    organization_id=invite.organization_id, user_id=user_record.id, role=invite.role, audience=invite.audience,
-                    repository_scope=invite.repository_scope,
-                    repository_ids_json=invite.repository_ids_json or "[]",
-                )
-                db.add(member)
-                memberships.append(member)
-            invite.accepted_at = datetime.utcnow()
+            password_hash = _hash_password(password)
+            if identity:
+                raise HTTPException(409, "An email and password account already exists for this email. Sign in instead.")
+            if user_record and user_record.email_verified_at:
+                raise HTTPException(409, "A kodai account already uses this verified email. Sign in with its existing method.")
+            if user_record:
+                pending = db.scalar(select(EmailVerification).where(
+                    EmailVerification.user_id == user_record.id,
+                    EmailVerification.purpose == "signup",
+                    EmailVerification.consumed_at.is_(None),
+                    EmailVerification.expires_at > now,
+                ).order_by(EmailVerification.created_at.desc()))
+                if pending and pending.password_hash and not _verify_password(password, pending.password_hash):
+                    raise HTTPException(409, "An account is already being verified for this email. Use its original password or sign in with the existing account.")
+                if not pending:
+                    token = _create_email_verification(db, user_record, email, "signup", password_hash)
+                else:
+                    token = _create_email_verification(db, user_record, email, "signup", pending.password_hash or password_hash)
+            else:
+                user_record = User(email=email, name=name or email.split("@", 1)[0], last_login_at=now)
+                db.add(user_record)
+                db.flush()
+                ensure_personal_workspace(db, user_record)
+                token = _create_email_verification(db, user_record, email, "signup", password_hash)
+            db.commit()
+            try:
+                email_sent = send_verification_email(email, token)
+            except (OSError, smtplib.SMTPException):
+                log.exception("Email verification delivery failed")
+                email_sent = False
+            return {"ok": True, "email": email, "verification_required": True, "email_sent": email_sent}
+
+        if not identity or not user_record or identity.user_id != user_record.id:
+            raise HTTPException(401, "No email and password account was found. Create an account or sign in with GitHub.")
+        if not _verify_password(password, identity.password_hash or ""):
+            raise HTTPException(401, "Invalid email or password")
+        if not user_record.email_verified_at:
+            token = _create_email_verification(db, user_record, email, "signup", identity.password_hash)
+            db.commit()
+            try:
+                email_sent = send_verification_email(email, token)
+            except (OSError, smtplib.SMTPException):
+                log.exception("Email verification delivery failed")
+                email_sent = False
+            return {"ok": True, "email": email, "verification_required": True, "email_sent": email_sent}
+        user_record.last_login_at = now
+        personal = ensure_personal_workspace(db, user_record)
+        invites = _accept_verified_invites(db, user_record, now)
+        workspace = workspace_for_organization(db, invites[0].organization_id) if invites else personal
+        organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id)) if workspace else None
         session_id = secrets.token_urlsafe(32)
-        active_organization_id = pending_invites[0].organization_id if pending_invites else (memberships[0].organization_id if memberships else None)
         db.add(UserSession(
-            id=session_id, user_id=user_record.id, expires_at=datetime.utcnow() + timedelta(days=7),
-            active_organization_id=active_organization_id,
+            id=session_id, user_id=user_record.id, expires_at=now + timedelta(days=7),
+            active_workspace_id=workspace.id if workspace else personal.id,
+            active_organization_id=organization.id if organization else None,
         ))
         db.commit()
         response.set_cookie("kodo_session", serializer.dumps(session_id), httponly=True, secure=_cookie_secure(), samesite="lax", max_age=604800)
         return {"ok": True, "email": email}
+    finally:
+        db.close()
+
+
+@router.post("/api/auth/email/verify")
+async def verify_email(request: Request, response: Response):
+    body = await request.json()
+    raw_token = body.get("token") if isinstance(body, dict) else None
+    if not isinstance(raw_token, str) or len(raw_token) > 200:
+        raise HTTPException(422, "Use the verification link from your email")
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        verification = db.scalar(select(EmailVerification).where(
+            EmailVerification.token_hash == token_hash,
+            EmailVerification.consumed_at.is_(None),
+            EmailVerification.expires_at > now,
+        ).with_for_update())
+        if not verification:
+            raise HTTPException(400, "This verification link is invalid, expired, or already used. Request a new one.")
+        user_record = db.get(User, verification.user_id)
+        if not user_record:
+            raise HTTPException(400, "This verification link is no longer valid")
+        email_owner = db.scalar(select(User).where(User.email == verification.email))
+        if email_owner and email_owner.id != user_record.id:
+            raise HTTPException(409, "This email is already linked to another kodai account")
+        identity = db.scalar(select(AuthIdentity).where(
+            AuthIdentity.provider == "email_password", AuthIdentity.provider_user_id == verification.email,
+        ))
+        if identity and identity.user_id != user_record.id:
+            raise HTTPException(409, "This email sign-in is already linked to another kodai account")
+        if verification.purpose == "link_email" and user_record.email and user_record.email != verification.email:
+            raise HTTPException(409, "This account already has a different email address")
+        if verification.purpose not in {"signup", "link_email"}:
+            raise HTTPException(400, "This verification link is invalid")
+        user_record.email = verification.email
+        user_record.email_verified_at = now
+        user_record.last_login_at = now
+        if verification.password_hash:
+            if identity:
+                identity.password_hash = verification.password_hash
+                identity.updated_at = now
+            else:
+                db.add(AuthIdentity(
+                    user_id=user_record.id, provider="email_password", provider_user_id=verification.email,
+                    password_hash=verification.password_hash,
+                ))
+        verification.consumed_at = now
+        personal = ensure_personal_workspace(db, user_record)
+        invites = _accept_verified_invites(db, user_record, now)
+        workspace = workspace_for_organization(db, invites[0].organization_id) if invites else personal
+        organization = db.scalar(select(Organization).where(Organization.workspace_id == workspace.id)) if workspace else None
+        session_id = secrets.token_urlsafe(32)
+        db.add(UserSession(
+            id=session_id, user_id=user_record.id, expires_at=now + timedelta(days=7),
+            active_workspace_id=workspace.id if workspace else personal.id,
+            active_organization_id=organization.id if organization else None,
+        ))
+        db.commit()
+        response.set_cookie("kodo_session", serializer.dumps(session_id), httponly=True,
+                            secure=_cookie_secure(), samesite="lax", max_age=604800)
+        return {"ok": True, "email": user_record.email}
     finally:
         db.close()
 
@@ -329,11 +433,6 @@ async def link_email_password(request: Request):
         user_record = db.get(User, session["user_id"])
         if not user_record:
             raise HTTPException(401, "Sign in to continue")
-        github_identity = db.scalar(select(AuthIdentity.id).where(
-            AuthIdentity.user_id == user_record.id, AuthIdentity.provider == "github",
-        ))
-        if not github_identity:
-            raise HTTPException(403, "Connect GitHub before adding email sign-in")
         identity = db.scalar(select(AuthIdentity).where(
             AuthIdentity.provider == "email_password", AuthIdentity.provider_user_id == email,
         ))
@@ -346,12 +445,13 @@ async def link_email_password(request: Request):
             raise HTTPException(409, "This email already belongs to another kodai account")
         if user_record.email and user_record.email.lower() != email:
             raise HTTPException(422, "Use the email already on this account")
-        user_record.email = email
-        db.add(AuthIdentity(
-            user_id=user_record.id, provider="email_password", provider_user_id=email,
-            password_hash=_hash_password(password),
-        ))
+        token = _create_email_verification(db, user_record, email, "link_email", _hash_password(password))
         db.commit()
-        return {"ok": True, "email": email}
+        try:
+            email_sent = send_verification_email(email, token)
+        except (OSError, smtplib.SMTPException):
+            log.exception("Email verification delivery failed")
+            email_sent = False
+        return {"ok": True, "email": email, "verification_required": True, "email_sent": email_sent}
     finally:
         db.close()

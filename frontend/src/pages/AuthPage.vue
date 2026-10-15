@@ -9,6 +9,8 @@ defineProps({
   password: { type: String, default: '' },
   submitting: { type: Boolean, default: false },
   githubUrl: { type: String, required: true },
+  verificationPending: { type: Boolean, default: false },
+  verificationEmailSent: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['field', 'mode', 'submit'])
@@ -34,13 +36,17 @@ function updateField(name, event) {
             <button type="button" :class="{ active: mode === 'signin' }" @click="emit('mode', 'signin')">Sign in</button>
             <button type="button" :class="{ active: mode === 'signup' }" @click="emit('mode', 'signup')">Create account</button>
           </div>
+          <div v-if="verificationPending" class="email-verification-notice" :class="{ 'email-verification-notice-error': !verificationEmailSent }" role="status">
+            <strong>{{ verificationEmailSent ? 'Check your inbox' : 'Email verification could not be sent' }}</strong>
+            <span>{{ verificationEmailSent ? `We sent a one-time link to ${email}. Verify the address before signing in or accepting an invitation.` : 'Email delivery is not configured or is temporarily unavailable. Configure SMTP for the server, then submit this form again to request a link.' }}</span>
+          </div>
           <form @submit.prevent="emit('submit')">
             <input v-if="mode === 'signup'" :value="name" type="text" autocomplete="name" placeholder="Your name (optional)" aria-label="Your name" maxlength="255" @input="updateField('name', $event)" />
             <input :value="email" type="email" autocomplete="email" placeholder="you@company.com" aria-label="Email address" required @input="updateField('email', $event)" />
             <input :value="password" type="password" :autocomplete="mode === 'signup' ? 'new-password' : 'current-password'" placeholder="Password (12+ characters)" aria-label="Password" minlength="12" maxlength="1024" required @input="updateField('password', $event)" />
-            <button class="button button-secondary" :disabled="submitting">{{ submitting ? (mode === 'signup' ? 'Creating…' : 'Signing in…') : (mode === 'signup' ? 'Create account' : 'Sign in with email') }}</button>
+            <button class="button button-secondary" :disabled="submitting">{{ submitting ? (mode === 'signup' ? 'Sending…' : 'Signing in…') : (verificationPending && mode === 'signup' ? 'Resend verification link' : (mode === 'signup' ? 'Create account' : 'Sign in with email')) }}</button>
           </form>
-          <span class="email-login-note">Email addresses are not verified and invitations are not emailed yet. New accounts can join pending invitations for the same address.</span>
+          <span class="email-login-note">Verify your email before it can be used to link an account or accept an organization invitation.</span>
         </div>
       </div>
     </section>

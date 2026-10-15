@@ -7,15 +7,20 @@ import LandingPage from './pages/LandingPage.vue'
 import NotFoundPage from './pages/NotFoundPage.vue'
 import SessionPage from './pages/SessionPage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
+import WorkspaceHomePage from './pages/WorkspaceHomePage.vue'
+import GithubWorkspacePage from './pages/GithubWorkspacePage.vue'
+import VerifyEmailPage from './pages/VerifyEmailPage.vue'
 import { useAppController } from './composables/useAppController.js'
 import { trackPageView } from './services/analytics.js'
 
 const {
   API_BASE, loading, page, signedIn, authMode, error, authName, authEmail, authPassword,
   authSubmitting, githubAuthUrl, setAuthField, switchAuthMode, signInWithEmail,
-  sidebarProps, topBarProps, selectRepository, selected, openSettings, installLink,
+  verificationPending, verificationEmailSent, verifyEmail,
+  sidebarProps, topBarProps, selectRepository, selected, openSettings, openWorkspaceHome, openGithubHome, switchWorkspace, installLink,
   settingsProps, loadAvailableInstallations, connectGithubInstallation, inviteMember,
-  switchOrganization, createOrganization, renameOrganization, linkEmailPassword,
+  loadTransferableRepositories, transferRepository,
+  switchOrganization, createOrganization, renameOrganization, transferOrganizationOwner, linkEmailPassword,
   changeMemberRole, removeOrganizationMember, revokeOrganizationInvite, setMode,
   toggleRepo, logout, saveContextFile, current, sessionDetailLoading,
   sessionWorkspaceProps, submitAgentTask, publishWorkSession, renameWorkSession,
@@ -59,12 +64,15 @@ watch([
     :password="authPassword"
     :submitting="authSubmitting"
     :github-url="githubAuthUrl()"
+    :verification-pending="verificationPending"
+    :verification-email-sent="verificationEmailSent"
     @field="setAuthField"
     @mode="switchAuthMode"
     @submit="signInWithEmail"
   />
 
   <NotFoundPage v-else-if="!loading && page === 'not-found'" />
+  <VerifyEmailPage v-else-if="page === 'verify-email'" :error="error" :loading="loading" />
   <div v-else-if="loading && !signedIn" class="public-loading" aria-live="polite"><span class="spinner"></span></div>
 
   <AppLayout
@@ -72,25 +80,43 @@ watch([
     :page="page"
     :error="error"
     :loading="loading"
-    :loading-label="page === 'session' ? 'Loading this coding session' : 'Loading your organization'"
+    :loading-label="page === 'session' ? 'Loading this coding session' : 'Loading your workspace'"
     :sidebar-props="sidebarProps"
     :top-bar-props="topBarProps"
     @dismiss-error="error = ''"
     @select-repository="selectRepository"
-    @home="selectRepository(selected)"
+    @home="openWorkspaceHome"
+    @github="openGithubHome"
+    @switch-workspace="switchWorkspace"
     @settings="openSettings"
     @connect="installLink"
   >
+    <WorkspaceHomePage
+      v-if="page === 'home' && signedIn"
+      :workspace-name="topBarProps.workspaceName"
+      :workspace-kind="sidebarProps.workspaceKind"
+    />
+
+    <GithubWorkspacePage
+      v-else-if="page === 'github' && signedIn"
+      :has-repositories="repos.length > 0"
+      :knowledge-only="knowledgeOnly"
+      @add-repository="installLink"
+    />
+
     <SettingsPage
-      v-if="page === 'settings' && signedIn"
+      v-else-if="page === 'settings' && signedIn"
       :settings-props="settingsProps"
       @connect="installLink"
       @refresh-installations="loadAvailableInstallations"
+      @load-transferable-repositories="loadTransferableRepositories"
+      @transfer-repository="transferRepository"
       @connect-installation="connectGithubInstallation"
       @invite-member="inviteMember"
       @switch-organization="switchOrganization"
       @create-organization="createOrganization"
       @rename-organization="renameOrganization"
+      @transfer-organization-owner="transferOrganizationOwner"
       @link-email-password="linkEmailPassword"
       @change-member-role="changeMemberRole"
       @remove-member="removeOrganizationMember"
@@ -120,7 +146,7 @@ watch([
     />
 
     <DashboardPage
-      v-else
+      v-else-if="page === 'dashboard'"
       :has-repositories="repos.length > 0"
       :knowledge-only="knowledgeOnly"
       :dashboard-props="dashboardProps"

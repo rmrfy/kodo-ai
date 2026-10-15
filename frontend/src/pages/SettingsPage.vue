@@ -5,8 +5,10 @@ defineProps({ settingsProps: { type: Object, default: () => ({}) } })
 
 const emit = defineEmits([
   'connect', 'refresh-installations', 'connect-installation', 'invite-member', 'switch-organization',
+  'load-transferable-repositories', 'transfer-repository',
   'create-organization', 'rename-organization', 'link-email-password', 'change-member-role',
   'remove-member', 'revoke-invite', 'mode', 'toggle-repo', 'logout',
+  'transfer-organization-owner',
   'save-organization-context', 'save-repository-context',
 ])
 
@@ -21,10 +23,13 @@ function forwardEvent(name, ...args) {
     @connect="emit('connect')"
     @refresh-installations="emit('refresh-installations')"
     @connect-installation="emit('connect-installation', $event)"
+    @load-transferable-repositories="emit('load-transferable-repositories', $event)"
+    @transfer-repository="emit('transfer-repository', $event)"
     @invite-member="emit('invite-member', $event)"
     @switch-organization="emit('switch-organization', $event)"
     @create-organization="emit('create-organization', $event)"
     @rename-organization="emit('rename-organization', $event)"
+    @transfer-organization-owner="emit('transfer-organization-owner', $event)"
     @link-email-password="emit('link-email-password', $event)"
     @change-member-role="emit('change-member-role', $event)"
     @remove-member="emit('remove-member', $event)"

@@ -43,6 +43,12 @@ input, textarea { accent-color: var(--mint); }
 .brand-mark, .welcome-mark { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 9px; background: #315f4a; color: #fff; font-size: 15px; font-weight: 750; }
 .brand-name { font-size: 18px; font-weight: 720; letter-spacing: -.7px; }
 .brand-name span { margin-left: 2px; color: #75837b; font-size: 14px; font-weight: 500; }
+.workspace-picker { display: grid; gap: 7px; margin: -22px 0 15px; padding: 0 7px; }
+.workspace-picker .sidebar-label { padding: 0 4px; }
+.workspace-picker .select-menu { width: 100%; }
+.create-workspace-shortcut { justify-self: start; border: 0; background: transparent; padding: 3px 4px; color: #77847a; font: inherit; font-size: 11px; cursor: pointer; }
+.create-workspace-shortcut:hover { color: #385f45; }
+.workspace-navigation { display: grid; gap: 2px; margin: 0 0 18px; }
 .sidebar-label, .sidebar-section-heading { padding: 0 10px; color: #8a948e; font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; }
 .sidebar-section-heading { display: flex; align-items: center; gap: 8px; min-height: 27px; margin: 0 0 9px; }
 .repo-count { padding: 2px 7px; border-radius: 10px; background: #eef2ee; color: #69776f; font-size: 10px; letter-spacing: 0; }
@@ -357,6 +363,20 @@ input::placeholder, textarea::placeholder { color: #929c95; }
 .session-content-shell > .page-loading { height: 100%; min-height: 0; }
 .spinner { width: 23px; height: 23px; border: 2px solid #e0e7e0; border-top-color: #668873; border-radius: 50%; animation: spin .75s linear infinite; }
 .welcome-card { position: relative; display: flex; align-items: flex-start; gap: 19px; min-height: 245px; overflow: hidden; margin-top: 26px; padding: 38px; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
+.workspace-home-page { min-height: calc(100vh - 124px); }
+.workspace-home-page > h1 { margin-top: 8px; color: #27352e; font-size: 26px; font-weight: 650; letter-spacing: -.8px; }
+.workspace-home-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 310px; margin-top: 24px; padding: 36px 24px; border: 1px solid var(--line); border-radius: 14px; background: #fff; text-align: center; }
+.workspace-home-mark { display: grid; place-items: center; width: 46px; height: 46px; margin-bottom: 15px; border: 1px solid #e3e9e3; border-radius: 13px; background: #f3f6f2; color: #54725b; font-size: 19px; font-weight: 700; }
+.workspace-home-empty h2 { color: #35433a; font-size: 15px; font-weight: 600; }
+.workspace-home-empty p { max-width: 450px; margin-top: 8px; color: #78847c; font-size: 13px; line-height: 1.65; }
+.workspace-home-empty .button { margin-top: 18px; }
+.email-verification-notice, .invite-delivery-status { display: grid; gap: 4px; margin: 0 20px 14px; padding: 11px 13px; border: 1px solid #d9e7db; border-radius: 8px; background: #f4f8f3; color: #55715b; font-size: 11px; line-height: 1.5; }
+.email-verification-notice strong { color: #435f4a; font-size: 11px; }
+.email-verification-notice-error { border-color: #eadbd4; background: #fff8f5; color: #8e665a; }
+.invite-delivery-status { margin: 0 20px 14px; }
+.auth-page .email-verification-notice { margin: 0; }
+.verification-card .welcome-copy > .button { margin-top: 18px; }
+.verification-card .spinner { margin-top: 20px; }
 .welcome-mark { width: 42px; height: 42px; border-radius: 11px; font-size: 21px; }
 .welcome-copy { position: relative; z-index: 1; max-width: 550px; }
 .welcome-copy h1 { margin-top: 8px; }
@@ -424,7 +444,11 @@ input::placeholder, textarea::placeholder { color: #929c95; }
   .auth-page .welcome-card { padding: 25px 20px; }
   .sidebar { position: relative; inset: auto; width: 100%; height: auto; padding: 12px 16px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
   .brand { margin: 0 0 11px; }
-  .sidebar-label, .nav-item, .install-status { display: none; }
+  .sidebar-label, .install-status { display: none; }
+  .workspace-picker { margin: 0 0 9px; padding: 0; }
+  .workspace-navigation { display: flex; gap: 6px; margin: 0 0 9px; }
+  .workspace-navigation .nav-item { display: flex; flex: 1; justify-content: center; min-width: 0; height: 36px; margin: 0; padding: 0 8px; font-size: 12px; }
+  .workspace-navigation .nav-item svg { flex: none; }
   .sidebar-bottom { display: flex; margin-top: 8px; padding-top: 9px; }
   .repository-list { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
   .repository-link { flex: none; width: auto; max-width: 215px; border: 1px solid var(--line); background: #fff; }
@@ -436,6 +460,10 @@ input::placeholder, textarea::placeholder { color: #929c95; }
   .topbar-actions { gap: 0; }
   .account-button { font-size: 11px; }
   .content-shell { padding: 23px 16px 20px; }
+  .workspace-home-page { min-height: calc(100vh - 150px); }
+  .workspace-home-page > h1 { font-size: 23px; }
+  .workspace-home-empty { min-height: 270px; margin-top: 20px; padding: 28px 18px; }
+  .email-verification-notice, .invite-delivery-status { margin-right: 12px; margin-left: 12px; }
   .page-heading { align-items: flex-start; flex-direction: column; gap: 15px; margin-bottom: 21px; }
   .repo-hero { gap: 15px; padding-bottom: 16px; }
   .repo-hero-actions { gap: 7px; }

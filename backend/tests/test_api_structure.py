@@ -18,13 +18,19 @@ class ApiRouterTest(unittest.TestCase):
             if method not in {"HEAD", "OPTIONS"}
         }
 
-        self.assertEqual(len(routes), 51)
+        self.assertEqual(len(routes), 57)
         self.assertTrue({
             ("POST", "/api/waitlist"),
             ("GET", "/api/auth/github"),
             ("GET", "/auth/callback"),
             ("GET", "/api/organization/members"),
+            ("GET", "/api/workspaces"),
+            ("POST", "/api/workspaces/activate"),
+            ("POST", "/api/organization/transfer-owner"),
+            ("POST", "/api/auth/email/verify"),
             ("GET", "/api/repos"),
+            ("GET", "/api/workspaces/{workspace_id}/repositories"),
+            ("POST", "/api/repos/{repo_id}/transfer"),
             ("POST", "/api/repos/{repo_id}/tasks"),
             ("POST", "/api/repos/{repo_id}/work-sessions/{work_session_id}/stage"),
             ("POST", "/api/repos/{repo_id}/work-sessions/{work_session_id}/commit"),
